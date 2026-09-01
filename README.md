@@ -14,6 +14,12 @@ export CHANGES_DIFF_LAYOUT=side-by-side
 The command engine reads a patch from standard input. Set its executable with
 `CHANGES_DIFF_COMMAND` or `-engine-command`.
 
+`changes render` provides the same patch input contract for another tool:
+
+```bash
+git diff | changes render
+```
+
 Install `git`, `ripgrep`, `ast-grep`, `tree-sitter`, and `calldiff` to enable
 each analysis layer. Delta, Difftastic, and diff-so-fancy are optional.
 

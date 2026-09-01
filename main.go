@@ -8,9 +8,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +48,10 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "difftool" {
 		runDifftool(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "render" {
+		runRender(os.Args[2:])
 		return
 	}
 	staged := flag.Bool("staged", false, "compare the index rather than the working tree")
@@ -474,6 +480,41 @@ func runDifftool(args []string) {
 	}
 }
 
+func runRender(args []string) {
+	flags := flag.NewFlagSet("changes render", flag.ContinueOnError)
+	diffEngine := flags.String("engine", envOr("CHANGES_DIFF_ENGINE", "git"), "display engine")
+	engineCommand := flags.String("engine-command", os.Getenv("CHANGES_DIFF_COMMAND"), "command display executable")
+	layout := flags.String("layout", envOr("CHANGES_DIFF_LAYOUT", "unified"), "unified or side-by-side")
+	color := flags.String("color", envOr("CHANGES_DIFF_COLOR", "auto"), "auto, always, or never")
+	width := flags.Int("width", envInt("CHANGES_DIFF_WIDTH"), "render width")
+	if err := flags.Parse(args); err != nil {
+		fail(err)
+	}
+	if flags.NArg() != 0 {
+		fail(fmt.Errorf("render reads a patch from standard input"))
+	}
+	patch, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fail(err)
+	}
+	options := engine.Options{
+		Color:   resolveColor(*color),
+		Command: *engineCommand,
+		Layout:  *layout,
+		Width:   columns(*width),
+	}
+	if err := engine.Validate(*diffEngine, options); err != nil {
+		fail(err)
+	}
+	out, err := engine.Patch(*diffEngine, string(patch), options)
+	if err != nil {
+		fail(err)
+	}
+	if out != "" {
+		fmt.Println(out)
+	}
+}
+
 func generateCompletion(args []string) {
 	if len(args) != 1 {
 		fail(fmt.Errorf("completion requires bash, zsh, fish, or nu"))
@@ -510,12 +551,35 @@ func generateCompletion(args []string) {
 					{Name: "width", Description: "Render width", Value: true},
 				},
 			},
+			{
+				Name:        "render",
+				Description: "Render a patch from standard input",
+				Flags: []completion.Flag{
+					{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
+					{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
+					{Name: "engine-command", Description: "Command display executable", Value: true},
+					{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
+					{Name: "width", Description: "Render width", Value: true},
+				},
+			},
 		},
 	})
 	if err != nil {
 		fail(err)
 	}
 	fmt.Println(out)
+}
+
+func envInt(name string) int {
+	value := os.Getenv(name)
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		fail(fmt.Errorf("%s must be an integer", name))
+	}
+	return parsed
 }
 
 func fail(err error) {

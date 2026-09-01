@@ -43,7 +43,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
           changes = pkgs.buildGoModule {
             pname = "changes";
-            version = "0.2.0";
+            version = "0.2.1";
             src = ./.;
             vendorHash = "sha256-dS2stk2YJHM5MFS/7DskZMLeH7mOKWd8e5MWRIwI084=";
             nativeBuildInputs = [
