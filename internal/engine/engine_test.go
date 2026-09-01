@@ -57,3 +57,14 @@ func TestFilesUsesMergedLabel(t *testing.T) {
 		t.Fatalf("label was not applied:\n%s", out)
 	}
 }
+
+func TestNormalizeColorStripsANSIWhenDisabled(t *testing.T) {
+	t.Parallel()
+	const colored = "\x1b[31mchanged\x1b[0m"
+	if got := normalizeColor(colored, "never"); got != "changed" {
+		t.Fatalf("unexpected output: %q", got)
+	}
+	if got := normalizeColor(colored, "always"); got != colored {
+		t.Fatalf("color was not preserved: %q", got)
+	}
+}

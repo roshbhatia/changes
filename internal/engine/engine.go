@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/roshbhatia/go-utils/diffview"
 	gitutil "github.com/roshbhatia/go-utils/git"
 )
@@ -52,11 +53,14 @@ func Patch(name string, patch string, options Options) (string, error) {
 		if options.Layout == "side-by-side" {
 			args = append(args, "--side-by-side")
 		}
-		return pipe("delta", args, patch)
+		out, err := pipe("delta", args, patch)
+		return normalizeColor(out, options.Color), err
 	case "diff-so-fancy":
-		return pipe("diff-so-fancy", nil, patch)
+		out, err := pipe("diff-so-fancy", nil, patch)
+		return normalizeColor(out, options.Color), err
 	case "command":
-		return pipe(options.Command, nil, patch)
+		out, err := pipe(options.Command, nil, patch)
+		return normalizeColor(out, options.Color), err
 	default:
 		return "", fmt.Errorf("%s needs repository context", name)
 	}
@@ -68,7 +72,8 @@ func Files(name, local, remote string, options Options) (string, error) {
 		return output("difft", args, true)
 	}
 	if name == "command" {
-		return output(options.Command, []string{local, remote}, true)
+		out, err := output(options.Command, []string{local, remote}, true)
+		return normalizeColor(out, options.Color), err
 	}
 	patch, err := output("git", []string{"diff", "--no-index", "--color=never", "--", local, remote}, true)
 	if err != nil {
@@ -139,6 +144,13 @@ func colorMode(value string) string {
 		return "never"
 	}
 	return "always"
+}
+
+func normalizeColor(output, color string) string {
+	if color == "never" {
+		return ansi.Strip(output)
+	}
+	return output
 }
 
 func difftasticLayout(value string) string {
