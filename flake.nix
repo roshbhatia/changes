@@ -43,7 +43,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
           changes = pkgs.buildGoModule {
             pname = "changes";
-            version = "0.2.2";
+            version = "0.2.3";
             src = ./.;
             vendorHash = "sha256-dS2stk2YJHM5MFS/7DskZMLeH7mOKWd8e5MWRIwI084=";
             nativeBuildInputs = [
@@ -51,6 +51,11 @@
               pkgs.makeWrapper
             ];
             nativeCheckInputs = [ pkgs.git ];
+            ldflags = [
+              "-s"
+              "-w"
+              "-X main.version=${changes.version}"
+            ];
             postInstall = ''
               wrapProgram "$out/bin/changes" \
                 --prefix PATH : ${

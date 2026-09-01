@@ -41,7 +41,13 @@ const usage = `changes [flags] [<from> [<to>]] [-- <path>...]
 Flags:
 `
 
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Println(version)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "completion" {
 		generateCompletion(os.Args[2:])
 		return
