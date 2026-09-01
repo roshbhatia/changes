@@ -5,7 +5,9 @@
 package source
 
 import (
+	"bytes"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/roshbhatia/go-utils/git"
@@ -26,7 +28,34 @@ type Spec struct {
 // view's carried lines, and git's default of three is what the renderer was
 // tuned against.
 func (s Spec) Diff() (string, error) {
-	args := []string{"diff", "--no-color", "--no-ext-diff", "--find-renames"}
+	return s.runDiff("never", nil)
+}
+
+// DisplayDiff asks Git to render its own patch. It is the zero-configuration
+// display engine and stays independent from the analysis patch above it.
+func (s Spec) DisplayDiff(color string) (string, error) {
+	return s.runDiff(color, nil)
+}
+
+// Difftastic uses Git's external-diff protocol. Git still selects revisions,
+// staged content, and pathspecs, while Difftastic compares each file pair.
+func (s Spec) Difftastic(layout, color string) (string, error) {
+	if layout == "unified" {
+		layout = "inline"
+	}
+	env := map[string]string{
+		"DFT_COLOR":         color,
+		"DFT_DISPLAY":       layout,
+		"GIT_EXTERNAL_DIFF": "difft",
+	}
+	return s.runDiff("never", env)
+}
+
+func (s Spec) args(color string, external bool) []string {
+	args := []string{"diff", "--color=" + color, "--find-renames"}
+	if !external {
+		args = append(args, "--no-ext-diff")
+	}
 	if s.Staged {
 		args = append(args, "--cached")
 	}
@@ -40,11 +69,39 @@ func (s Spec) Diff() (string, error) {
 		args = append(args, "--")
 		args = append(args, s.Paths...)
 	}
-	out, err := git.Output(s.Dir, args...)
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	return args
+}
+
+func (s Spec) runDiff(color string, extraEnv map[string]string) (string, error) {
+	args := s.args(color, len(extraEnv) > 0)
+	if len(extraEnv) == 0 {
+		out, err := git.Output(s.Dir, args...)
+		if err != nil {
+			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		return out, nil
 	}
-	return out, nil
+	cmd := exec.Command("git", args...)
+	cmd.Dir = s.Dir
+	cmd.Env = git.CleanEnv()
+	for key, value := range extraEnv {
+		kept := cmd.Env[:0]
+		for _, entry := range cmd.Env {
+			if !strings.HasPrefix(entry, key+"=") {
+				kept = append(kept, entry)
+			}
+		}
+		cmd.Env = kept
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // Root resolves the repository the paths are relative to. Every layer keys on

@@ -43,9 +43,35 @@
           pkgs = nixpkgs.legacyPackages.${system};
           changes = pkgs.buildGoModule {
             pname = "changes";
-            version = "0.1.0";
+            version = "0.2.0";
             src = ./.;
-            vendorHash = "sha256-YcFOQyHU8hbeb8APaaZaxZlhUWcsGEF5tPgFaGjMcmA=";
+            vendorHash = "sha256-dS2stk2YJHM5MFS/7DskZMLeH7mOKWd8e5MWRIwI084=";
+            nativeBuildInputs = [
+              pkgs.installShellFiles
+              pkgs.makeWrapper
+            ];
+            nativeCheckInputs = [ pkgs.git ];
+            postInstall = ''
+              wrapProgram "$out/bin/changes" \
+                --prefix PATH : ${
+                  pkgs.lib.makeBinPath [
+                    pkgs.ast-grep
+                    pkgs.delta
+                    pkgs.diff-so-fancy
+                    pkgs.difftastic
+                    pkgs.git
+                    pkgs.ripgrep
+                    pkgs.tree-sitter
+                  ]
+                }
+              installShellCompletion \
+                --cmd changes \
+                --bash <("$out/bin/changes" completion bash) \
+                --fish <("$out/bin/changes" completion fish) \
+                --zsh <("$out/bin/changes" completion zsh)
+              mkdir -p "$out/share/nushell/vendor/autoload"
+              "$out/bin/changes" completion nu > "$out/share/nushell/vendor/autoload/changes.nu"
+            '';
             meta = {
               description = "Read Git changes as a symbol tree with call edges";
               homepage = "https://github.com/roshbhatia/changes";
@@ -86,6 +112,16 @@
               pkgs.go-tools
               pkgs.goreleaser
               pkgs.ripgrep
+              pkgs.shfmt
+              pkgs.ast-grep
+              pkgs.delta
+              pkgs.diff-so-fancy
+              pkgs.difftastic
+              pkgs.git
+              pkgs.fish
+              pkgs.ffmpeg
+              pkgs.tree-sitter
+              pkgs.charm-freeze
             ];
             shellHook = ''
               export GOTOOLCHAIN=local

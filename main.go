@@ -19,7 +19,9 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
+	"github.com/roshbhatia/changes/internal/engine"
 	"github.com/roshbhatia/changes/internal/source"
+	"github.com/roshbhatia/go-utils/completion"
 	"github.com/roshbhatia/go-utils/diffview"
 	"github.com/roshbhatia/go-utils/workspace"
 )
@@ -38,6 +40,14 @@ Flags:
 `
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "completion" {
+		generateCompletion(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "difftool" {
+		runDifftool(os.Args[2:])
+		return
+	}
 	staged := flag.Bool("staged", false, "compare the index rather than the working tree")
 	since := flag.String("since", "", "compare against the tree as of a time or a revision, e.g. \"2 hours ago\" or HEAD~3")
 	watch := flag.Bool("watch", false, "reprint whenever the diff changes")
@@ -53,12 +63,16 @@ func main() {
 	stat := flag.Bool("stat", false, "draw the tree and the churn, without the hunks")
 	flag.BoolVar(stat, "s", false, "shorthand for -stat")
 	color := flag.String("color", "auto", "color output: auto, always, or never")
+	diffEngine := flag.String("engine", envOr("CHANGES_DIFF_ENGINE", "git"), "display engine: git, delta, difftastic, diff-so-fancy, internal, or command")
+	engineCommand := flag.String("engine-command", os.Getenv("CHANGES_DIFF_COMMAND"), "executable used by the command display engine")
+	layout := flag.String("layout", envOr("CHANGES_DIFF_LAYOUT", "unified"), "diff layout: unified or side-by-side")
 	flag.Usage = func() {
 		_, _ = fmt.Fprint(flag.CommandLine.Output(), usage)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	switch *color {
+	resolvedColor := resolveColor(*color)
+	switch resolvedColor {
 	case "auto":
 	case "always":
 		lipgloss.SetColorProfile(termenv.ANSI)
@@ -66,6 +80,15 @@ func main() {
 		lipgloss.SetColorProfile(termenv.Ascii)
 	default:
 		fail(fmt.Errorf("-color must be auto, always, or never"))
+	}
+	engineOptions := engine.Options{
+		Color:   resolvedColor,
+		Command: *engineCommand,
+		Layout:  *layout,
+		Width:   columns(*width),
+	}
+	if err := engine.Validate(*diffEngine, engineOptions); err != nil {
+		fail(err)
 	}
 
 	dir, err := os.Getwd()
@@ -125,14 +148,17 @@ func main() {
 		})
 	}
 	view := renderer{
-		specs:  specs,
-		under:  workspace.Root(dir),
-		named:  *recurse,
-		stat:   *stat,
-		width:  *width,
-		syms:   !*noSyms && !*stat,
-		calls:  !*noCalls && !*stat,
-		budget: *budget,
+		specs:         specs,
+		under:         workspace.Root(dir),
+		named:         *recurse,
+		stat:          *stat,
+		width:         *width,
+		syms:          !*noSyms && !*stat,
+		calls:         !*noCalls && !*stat,
+		budget:        *budget,
+		color:         resolvedColor,
+		engine:        *diffEngine,
+		engineOptions: engineOptions,
 	}
 
 	if !*watch {
@@ -191,14 +217,17 @@ func split(root string, args []string) (from, to string, paths []string) {
 }
 
 type renderer struct {
-	specs  []source.Spec
-	under  string
-	named  bool
-	stat   bool
-	width  int
-	syms   bool
-	calls  bool
-	budget time.Duration
+	specs         []source.Spec
+	under         string
+	named         bool
+	stat          bool
+	width         int
+	syms          bool
+	calls         bool
+	budget        time.Duration
+	color         string
+	engine        string
+	engineOptions engine.Options
 }
 
 func (r renderer) render() (string, error) {
@@ -206,7 +235,48 @@ func (r renderer) render() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return r.draw(patches), nil
+	return r.renderPatches(patches)
+}
+
+func (r renderer) renderPatches(patches []string) (string, error) {
+	if r.stat || r.engine == "internal" {
+		return r.draw(patches, false), nil
+	}
+	body, err := r.display(patches)
+	if err != nil {
+		return "", err
+	}
+	summary := r.draw(patches, true)
+	if summary == "" {
+		return body, nil
+	}
+	if body == "" {
+		return summary, nil
+	}
+	return summary + "\n\n" + body, nil
+}
+
+func (r renderer) display(patches []string) (string, error) {
+	outputs := make([]string, 0, len(r.specs))
+	if r.engine == "git" || r.engine == "difftastic" {
+		for _, spec := range r.specs {
+			var output string
+			var err error
+			if r.engine == "git" {
+				output, err = spec.DisplayDiff(r.color)
+			} else {
+				output, err = spec.Difftastic(r.engineOptions.Layout, r.color)
+			}
+			if err != nil {
+				return "", err
+			}
+			if output != "" {
+				outputs = append(outputs, output)
+			}
+		}
+		return strings.Join(outputs, "\n\n"), nil
+	}
+	return engine.Patch(r.engine, strings.Join(patches, "\n"), r.engineOptions)
 }
 
 // patches reads one repository per spec, concurrently, because git is the cheap
@@ -243,13 +313,14 @@ func (r renderer) patches() ([]string, error) {
 // repository reported, prefixed with the repository's place under the
 // workspace, so two repositories holding the same file name stay apart and the
 // symbol and call layers keep their keys.
-func (r renderer) draw(patches []string) string {
+func (r renderer) draw(patches []string, summary bool) string {
 	opts := diffview.Options{
 		Width:   r.columns(),
 		Symbols: map[string][]diffview.Symbol{},
 		Edges:   map[string][]diffview.Edge{},
 		Pins:    map[string]bool{},
 		Stat:    r.stat,
+		Summary: summary,
 	}
 	for i, patch := range patches {
 		files := diffview.Parse(patch)
@@ -309,15 +380,7 @@ func (r renderer) layers(spec source.Spec, files []diffview.File) (map[string][]
 // The renderer pads every row to the width it is given, so a width taken from
 // a pipe would print a wall of trailing spaces. 100 is the width the side by
 // side view was tuned against.
-func (r renderer) columns() int {
-	if r.width > 0 {
-		return r.width
-	}
-	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
-		return w
-	}
-	return 100
-}
+func (r renderer) columns() int { return columns(r.width) }
 
 // follow reprints on change rather than on a timer, because a diff that has not
 // moved redraws to the same bytes and the flicker says nothing. The raw patches
@@ -332,7 +395,10 @@ func (r renderer) follow(every time.Duration) error {
 		now := strings.Join(patches, "\x00")
 		if now != last {
 			last = now
-			out := r.draw(patches)
+			out, err := r.renderPatches(patches)
+			if err != nil {
+				return err
+			}
 			if out == "" {
 				out = "changes: nothing changed"
 			}
@@ -343,6 +409,113 @@ func (r renderer) follow(every time.Duration) error {
 		}
 		time.Sleep(every)
 	}
+}
+
+func columns(width int) int {
+	if width > 0 {
+		return width
+	}
+	if value, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && value > 0 {
+		return value
+	}
+	return 100
+}
+
+func resolveColor(value string) string {
+	if value == "auto" {
+		if term.IsTerminal(int(os.Stdout.Fd())) {
+			return "always"
+		}
+		return "never"
+	}
+	return value
+}
+
+func envOr(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func runDifftool(args []string) {
+	flags := flag.NewFlagSet("changes difftool", flag.ContinueOnError)
+	diffEngine := flags.String("engine", envOr("CHANGES_DIFF_ENGINE", "git"), "display engine")
+	engineCommand := flags.String("engine-command", os.Getenv("CHANGES_DIFF_COMMAND"), "command display executable")
+	layout := flags.String("layout", envOr("CHANGES_DIFF_LAYOUT", "unified"), "unified or side-by-side")
+	color := flags.String("color", "auto", "auto, always, or never")
+	width := flags.Int("width", 0, "render width")
+	if err := flags.Parse(args); err != nil {
+		fail(err)
+	}
+	if flags.NArg() < 2 || flags.NArg() > 3 {
+		fail(fmt.Errorf("difftool requires LOCAL and REMOTE files, with an optional MERGED path"))
+	}
+	label := os.Getenv("MERGED")
+	if flags.NArg() == 3 {
+		label = flags.Arg(2)
+	}
+	options := engine.Options{
+		Color:   resolveColor(*color),
+		Command: *engineCommand,
+		Label:   label,
+		Layout:  *layout,
+		Width:   columns(*width),
+	}
+	if err := engine.Validate(*diffEngine, options); err != nil {
+		fail(err)
+	}
+	out, err := engine.Files(*diffEngine, flags.Arg(0), flags.Arg(1), options)
+	if err != nil {
+		fail(err)
+	}
+	if out != "" {
+		fmt.Println(out)
+	}
+}
+
+func generateCompletion(args []string) {
+	if len(args) != 1 {
+		fail(fmt.Errorf("completion requires bash, zsh, fish, or nu"))
+	}
+	out, err := completion.Generate(args[0], completion.Command{
+		Name:        "changes",
+		Description: "Render Git changes with symbol and call analysis",
+		Flags: []completion.Flag{
+			{Name: "budget", Description: "Analysis time budget", Value: true},
+			{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
+			{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
+			{Name: "engine-command", Description: "Command display executable", Value: true},
+			{Name: "interval", Description: "Watch interval", Value: true},
+			{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
+			{Name: "no-calls", Description: "Skip call analysis"},
+			{Name: "no-symbols", Description: "Skip symbol analysis"},
+			{Name: "recursive", Short: "r", Description: "Read all workspace repositories"},
+			{Name: "root", Description: "Workspace scan root", Value: true},
+			{Name: "since", Description: "Left revision or time", Value: true},
+			{Name: "staged", Description: "Compare the index"},
+			{Name: "stat", Short: "s", Description: "Show change summary"},
+			{Name: "watch", Short: "w", Description: "Watch for changes"},
+			{Name: "width", Description: "Render width", Value: true},
+		},
+		Subcommands: []completion.Command{
+			{
+				Name:        "difftool",
+				Description: "Compare Git difftool LOCAL and REMOTE files",
+				Flags: []completion.Flag{
+					{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
+					{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
+					{Name: "engine-command", Description: "Command display executable", Value: true},
+					{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
+					{Name: "width", Description: "Render width", Value: true},
+				},
+			},
+		},
+	})
+	if err != nil {
+		fail(err)
+	}
+	fmt.Println(out)
 }
 
 func fail(err error) {
