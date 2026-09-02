@@ -8,3 +8,6 @@ These commands implement optional integrations outside the Changes core.
 Each provider reads one JSON request from standard input and writes one JSON
 response. Configure commands and advertised capabilities in YAML. Changes can
 therefore use a replacement without importing its SDK or package.
+
+Run `changes provider validate` to exercise every configured provider against
+a synthetic working tree. This does not read or change the current repository.

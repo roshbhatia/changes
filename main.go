@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -58,6 +59,10 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "generate" {
 		runGenerate(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "provider" {
+		runProvider(os.Args[2:])
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "difftool" {
@@ -631,7 +636,108 @@ func commandMetadata() completion.Command {
 					{Name: "check", Description: "Fail when generated files are stale"},
 				},
 			},
+			{
+				Name:        "provider",
+				Description: "Inspect and validate analysis providers",
+				Subcommands: []completion.Command{
+					{Name: "list", Description: "List configured analysis providers", Flags: []completion.Flag{{Name: "config", Description: "YAML configuration file", Value: true}, {Name: "json", Description: "Print JSON"}}},
+					{Name: "validate", Description: "Validate provider commands and JSON behavior", Flags: []completion.Flag{{Name: "config", Description: "YAML configuration file", Value: true}, {Name: "json", Description: "Print JSON"}}},
+				},
+			},
 		},
+	}
+}
+
+func runProvider(args []string) {
+	if len(args) == 0 || (args[0] != "list" && args[0] != "validate") {
+		fail(fmt.Errorf("provider requires list or validate"))
+	}
+	action := args[0]
+	flags := flag.NewFlagSet("changes provider "+action, flag.ContinueOnError)
+	configPath := flags.String("config", "", "YAML configuration file")
+	asJSON := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args[1:]); err != nil {
+		fail(err)
+	}
+	if flags.NArg() > 1 {
+		fail(fmt.Errorf("provider %s accepts at most one provider name", action))
+	}
+	configured, err := appconfig.Load(*configPath)
+	if err != nil {
+		fail(err)
+	}
+	providers := append([]provider.Manifest{}, configured.Providers...)
+	sort.Slice(providers, func(left, right int) bool { return providers[left].Name < providers[right].Name })
+	if flags.NArg() == 1 {
+		name := flags.Arg(0)
+		selected := []provider.Manifest{}
+		for _, manifest := range providers {
+			if manifest.Name == name {
+				selected = append(selected, manifest)
+			}
+		}
+		if len(selected) == 0 {
+			fail(fmt.Errorf("unknown provider %q", name))
+		}
+		providers = selected
+	}
+	if action == "list" {
+		if *asJSON {
+			data, _ := json.Marshal(providers)
+			fmt.Println(string(data))
+			return
+		}
+		if len(providers) == 0 {
+			fmt.Println("No analysis providers are configured.")
+			return
+		}
+		for _, manifest := range providers {
+			description := manifest.Description
+			if description == "" {
+				description = "Repository analysis provider"
+			}
+			fmt.Printf("%s\n  %s\n  provides  %s\n  command   %s\n", manifest.Name, description, strings.Join(manifest.Capabilities, ", "), strings.Join(manifest.Command, " "))
+		}
+		return
+	}
+	if len(providers) == 0 {
+		if *asJSON {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("No analysis providers are configured.")
+		}
+		return
+	}
+	results := make([]provider.Validation, 0, len(providers))
+	failed := false
+	for _, manifest := range providers {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		result := provider.Validate(ctx, manifest)
+		cancel()
+		results = append(results, result)
+		failed = failed || result.Status != "ok"
+	}
+	if *asJSON {
+		data, _ := json.Marshal(results)
+		fmt.Println(string(data))
+	} else {
+		for _, result := range results {
+			mark := "+"
+			if result.Status != "ok" {
+				mark = "x"
+			}
+			fmt.Printf("%s %s · %s\n", mark, result.Name, strings.Join(result.Capabilities, ", "))
+			for _, check := range result.Checks {
+				checkMark := "+"
+				if check.Status != "ok" {
+					checkMark = "x"
+				}
+				fmt.Printf("  %s %-12s %s\n", checkMark, check.Name, check.Message)
+			}
+		}
+	}
+	if failed {
+		os.Exit(1)
 	}
 }
 

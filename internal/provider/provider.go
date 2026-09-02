@@ -26,6 +26,8 @@ type Manifest struct {
 	Name         string   `json:"name" yaml:"name" jsonschema:"required"`
 	Command      []string `json:"command" yaml:"command" jsonschema:"required,minItems=1"`
 	Capabilities []string `json:"capabilities" yaml:"capabilities" jsonschema:"required,minItems=1"`
+	Description  string   `json:"description,omitempty" yaml:"description"`
+	Requires     []string `json:"requires,omitempty" yaml:"requires"`
 }
 
 // Request describes one repository comparison without naming an implementation.
@@ -42,6 +44,96 @@ type Request struct {
 type Response struct {
 	Edges   map[string][]diffview.Edge   `json:"edges,omitempty"`
 	Symbols map[string][]diffview.Symbol `json:"symbols,omitempty"`
+}
+
+// ValidationCheck describes one provider contract check.
+type ValidationCheck struct {
+	Message string `json:"message"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+}
+
+// Validation is the complete result for one configured provider.
+type Validation struct {
+	Capabilities []string          `json:"capabilities"`
+	Checks       []ValidationCheck `json:"checks"`
+	Command      []string          `json:"command,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	Name         string            `json:"name"`
+	Status       string            `json:"status"`
+}
+
+func validationCheck(name, message string, ok bool) ValidationCheck {
+	status := "failed"
+	if ok {
+		status = "ok"
+	}
+	return ValidationCheck{Name: name, Message: message, Status: status}
+}
+
+// Validate runs one provider against a synthetic working tree and verifies its
+// JSON response without reading or changing the caller's repository.
+func Validate(ctx context.Context, config Manifest) Validation {
+	result := Validation{
+		Capabilities: append([]string{}, config.Capabilities...),
+		Description:  config.Description,
+		Name:         config.Name,
+	}
+	manifestOK := config.Name != "" && len(config.Command) > 0 && len(config.Capabilities) > 0
+	for _, capability := range config.Capabilities {
+		if capability != CapabilityCalls && capability != CapabilitySymbols {
+			manifestOK = false
+		}
+	}
+	result.Checks = append(result.Checks, validationCheck(
+		"manifest", "name, command, and supported capabilities are valid", manifestOK,
+	))
+	if !manifestOK {
+		result.Status = "failed"
+		return result
+	}
+	executable, err := exec.LookPath(config.Command[0])
+	if err != nil {
+		result.Checks = append(result.Checks, validationCheck("executable", err.Error(), false))
+		result.Status = "failed"
+		return result
+	}
+	resolved := config
+	resolved.Command = append([]string{executable}, config.Command[1:]...)
+	result.Command = append([]string{}, resolved.Command...)
+	result.Checks = append(result.Checks, validationCheck("executable", "resolved "+executable, true))
+	for _, dependency := range config.Requires {
+		resolvedDependency, err := exec.LookPath(dependency)
+		if err != nil {
+			result.Checks = append(result.Checks, validationCheck("dependency", dependency+" is unavailable", false))
+			result.Status = "failed"
+			return result
+		}
+		result.Checks = append(result.Checks, validationCheck("dependency", "resolved "+resolvedDependency, true))
+	}
+	directory, err := os.MkdirTemp("", "changes-provider-validation-")
+	if err != nil {
+		result.Checks = append(result.Checks, validationCheck("fixture", err.Error(), false))
+		result.Status = "failed"
+		return result
+	}
+	defer func() { _ = os.RemoveAll(directory) }()
+	if err := os.WriteFile(filepath.Join(directory, "validation.go"), []byte("package validation\n\nfunc Ready() bool { return true }\n"), 0o600); err != nil {
+		result.Checks = append(result.Checks, validationCheck("fixture", err.Error(), false))
+		result.Status = "failed"
+		return result
+	}
+	payload, _ := json.Marshal(Request{
+		Directory: directory, Files: []string{"validation.go"}, Fingerprint: "provider-validation",
+	})
+	if _, err := execute(ctx, resolved, payload); err != nil {
+		result.Checks = append(result.Checks, validationCheck("protocol", err.Error(), false))
+		result.Status = "failed"
+		return result
+	}
+	result.Checks = append(result.Checks, validationCheck("protocol", "accepted a synthetic request and returned valid JSON", true))
+	result.Status = "ok"
+	return result
 }
 
 // Supports reports whether a provider advertises one capability.
@@ -75,6 +167,18 @@ func Run(ctx context.Context, config Manifest, request Request) (Response, error
 			}
 		}
 	}
+	response, err := execute(ctx, config, payload)
+	if err != nil {
+		return Response{}, err
+	}
+	if cachePath != "" {
+		encoded, _ := json.Marshal(response)
+		_ = writeResult(cachePath, encoded)
+	}
+	return response, nil
+}
+
+func execute(ctx context.Context, config Manifest, payload []byte) (Response, error) {
 	command := exec.CommandContext(ctx, config.Command[0], config.Command[1:]...)
 	command.Env = os.Environ()
 	command.Stdin = bytes.NewReader(payload)
@@ -91,9 +195,6 @@ func Run(ctx context.Context, config Manifest, request Request) (Response, error
 	response := Response{}
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
 		return Response{}, fmt.Errorf("provider %s returned invalid JSON: %w", config.Name, err)
-	}
-	if cachePath != "" {
-		_ = writeResult(cachePath, stdout.Bytes())
 	}
 	return response, nil
 }

@@ -29,7 +29,8 @@ git -c diff.tool=changes \
 
 See [`examples/workspace-review`](examples/workspace-review/README.md) and
 [`examples/custom-difftool`](examples/custom-difftool/README.md) for complete
-workflows.
+workflows. Provider authors can use
+[`examples/provider-validation`](examples/provider-validation/README.md).
 
 ## Configure it
 
@@ -46,17 +47,32 @@ diff:
   command: [delta, --paging=never]
 providers:
   - name: symbols
+    description: Map changed lines to source symbols with ast-grep
     command: [changes-provider-ast-grep]
     capabilities: [symbols]
+    requires: [ast-grep]
   - name: calls
+    description: Find call edges changed by the patch with calldiff
     command: [changes-provider-calldiff]
     capabilities: [calls]
+    requires: [calldiff]
 ```
 
 The command display engine reads a patch from standard input. During
 `changes difftool`, `$LOCAL`, `$REMOTE`, and `$MERGED` arguments use Git's
 difftool convention. If no file placeholders exist, Changes appends the local
 and remote paths.
+
+Inspect and test providers without rendering a real repository:
+
+```bash
+changes provider list
+changes provider validate
+changes provider validate symbols
+```
+
+Validation checks each YAML manifest, resolves its executable, sends a
+synthetic repository request, and verifies the JSON response.
 
 Generate the schema and command reference with `changes generate`. CI uses
 `changes generate --check` to reject stale output.
@@ -120,6 +136,28 @@ Generate README command docs and JSON Schema
 | Option | Description |
 | --- | --- |
 | `--check` | Fail when generated files are stale |
+
+### `changes provider`
+
+Inspect and validate analysis providers
+
+### `changes provider list`
+
+List configured analysis providers
+
+| Option | Description |
+| --- | --- |
+| `--config` `<value>` | YAML configuration file |
+| `--json` | Print JSON |
+
+### `changes provider validate`
+
+Validate provider commands and JSON behavior
+
+| Option | Description |
+| --- | --- |
+| `--config` `<value>` | YAML configuration file |
+| `--json` | Print JSON |
 
 <!-- END GENERATED:cli -->
 

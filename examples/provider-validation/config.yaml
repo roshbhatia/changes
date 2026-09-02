@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/roshbhatia/changes/main/schema/changes.schema.json
+color: auto
+diff:
+  engine: git
+  layout: unified
+providers:
+  - name: symbols
+    description: Map changed lines to source symbols with ast-grep
+    command: [changes-provider-ast-grep]
+    capabilities: [symbols]
+    requires: [ast-grep]
+  - name: calls
+    description: Find call edges changed by the patch with calldiff
+    command: [changes-provider-calldiff]
+    capabilities: [calls]
+    requires: [calldiff]

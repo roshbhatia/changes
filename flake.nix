@@ -41,7 +41,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          version = "0.4.0";
+          version = "0.5.0";
           mkPackage =
             {
               name,
@@ -53,7 +53,7 @@
               pname = name;
               inherit version;
               src = ./.;
-              vendorHash = "sha256-f7P1/0Ch4lnYCNVq631OD27a8TY31XJeHqc5fdVsCYg=";
+              vendorHash = "sha256-+eLh1JadOkKBjSnx06403XJtC7cZcxUf+kXT0vk56lA=";
               subPackages = [ subPackage ];
               nativeBuildInputs = [ pkgs.makeWrapper ] ++ pkgs.lib.optional completions pkgs.installShellFiles;
               nativeCheckInputs = [ pkgs.git ];
