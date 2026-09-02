@@ -6,6 +6,8 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"io"
@@ -21,7 +23,9 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
+	"github.com/roshbhatia/changes/internal/appconfig"
 	"github.com/roshbhatia/changes/internal/engine"
+	"github.com/roshbhatia/changes/internal/provider"
 	"github.com/roshbhatia/changes/internal/source"
 	"github.com/roshbhatia/go-utils/completion"
 	"github.com/roshbhatia/go-utils/diffview"
@@ -52,6 +56,10 @@ func main() {
 		generateCompletion(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "generate" {
+		runGenerate(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "difftool" {
 		runDifftool(os.Args[2:])
 		return
@@ -60,7 +68,13 @@ func main() {
 		runRender(os.Args[2:])
 		return
 	}
+	configPath := argumentValue(os.Args[1:], "config")
+	configured, err := appconfig.Load(configPath)
+	if err != nil {
+		fail(err)
+	}
 	staged := flag.Bool("staged", false, "compare the index rather than the working tree")
+	flag.String("config", configPath, "configuration file (default: ~/.config/changes/config.yaml)")
 	since := flag.String("since", "", "compare against the tree as of a time or a revision, e.g. \"2 hours ago\" or HEAD~3")
 	watch := flag.Bool("watch", false, "reprint whenever the diff changes")
 	flag.BoolVar(watch, "w", false, "shorthand for -watch")
@@ -74,10 +88,10 @@ func main() {
 	scan := flag.String("root", "", "scan from here with -r, instead of the workspace")
 	stat := flag.Bool("stat", false, "draw the tree and the churn, without the hunks")
 	flag.BoolVar(stat, "s", false, "shorthand for -stat")
-	color := flag.String("color", "auto", "color output: auto, always, or never")
-	diffEngine := flag.String("engine", envOr("CHANGES_DIFF_ENGINE", "git"), "display engine: git, delta, difftastic, diff-so-fancy, internal, or command")
-	engineCommand := flag.String("engine-command", os.Getenv("CHANGES_DIFF_COMMAND"), "executable used by the command display engine")
-	layout := flag.String("layout", envOr("CHANGES_DIFF_LAYOUT", "unified"), "diff layout: unified or side-by-side")
+	color := flag.String("color", configured.Color, "color output: auto, always, or never")
+	diffEngine := flag.String("engine", configured.Diff.Engine, "display engine: git, internal, or command")
+	engineCommand := flag.String("engine-command", "", "override the configured patch command")
+	layout := flag.String("layout", configured.Diff.Layout, "diff layout: unified or side-by-side")
 	flag.Usage = func() {
 		_, _ = fmt.Fprint(flag.CommandLine.Output(), usage)
 		flag.PrintDefaults()
@@ -95,7 +109,7 @@ func main() {
 	}
 	engineOptions := engine.Options{
 		Color:   resolvedColor,
-		Command: *engineCommand,
+		Command: commandValue(configured.Diff.Command, *engineCommand),
 		Layout:  *layout,
 		Width:   columns(*width),
 	}
@@ -171,6 +185,7 @@ func main() {
 		color:         resolvedColor,
 		engine:        *diffEngine,
 		engineOptions: engineOptions,
+		providers:     configured.Providers,
 	}
 
 	if !*watch {
@@ -240,6 +255,7 @@ type renderer struct {
 	color         string
 	engine        string
 	engineOptions engine.Options
+	providers     []provider.Manifest
 }
 
 func (r renderer) render() (string, error) {
@@ -270,15 +286,9 @@ func (r renderer) renderPatches(patches []string) (string, error) {
 
 func (r renderer) display(patches []string) (string, error) {
 	outputs := make([]string, 0, len(r.specs))
-	if r.engine == "git" || r.engine == "difftastic" {
+	if r.engine == "git" {
 		for _, spec := range r.specs {
-			var output string
-			var err error
-			if r.engine == "git" {
-				output, err = spec.DisplayDiff(r.color)
-			} else {
-				output, err = spec.Difftastic(r.engineOptions.Layout, r.color)
-			}
+			output, err := spec.DisplayDiff(r.color)
 			if err != nil {
 				return "", err
 			}
@@ -345,7 +355,7 @@ func (r renderer) draw(patches []string, summary bool) string {
 		if under != "" {
 			opts.Pins[strings.TrimSuffix(under, "/")] = true
 		}
-		syms, edges := r.layers(spec, files)
+		syms, edges := r.layers(spec, files, patches[i])
 		for j := range files {
 			at := under + files[j].Path
 			opts.Symbols[at] = syms[files[j].Path]
@@ -370,7 +380,7 @@ func (r renderer) prefix(dir string) string {
 	return rel + "/"
 }
 
-func (r renderer) layers(spec source.Spec, files []diffview.File) (map[string][]diffview.Symbol, map[string][]diffview.Edge) {
+func (r renderer) layers(spec source.Spec, files []diffview.File, patch string) (map[string][]diffview.Symbol, map[string][]diffview.Edge) {
 	touched := make([]string, 0, len(files))
 	for _, f := range files {
 		touched = append(touched, f.Path)
@@ -378,16 +388,47 @@ func (r renderer) layers(spec source.Spec, files []diffview.File) (map[string][]
 	sort.Strings(touched)
 
 	syms := map[string][]diffview.Symbol{}
-	if r.syms {
-		dir, kept, done := spec.Tree(touched)
-		defer done()
-		syms = source.Outline(dir, kept, r.budget)
-	}
 	edges := map[string][]diffview.Edge{}
-	if r.calls {
-		edges = source.Calls(spec.Dir, spec.From, spec.To, touched, r.budget)
+	request := provider.Request{
+		Directory:   spec.Dir,
+		Files:       touched,
+		Fingerprint: fmt.Sprintf("%x", sha256.Sum256([]byte(patch))),
+		From:        spec.From,
+		Staged:      spec.Staged,
+		To:          spec.To,
+	}
+	for _, configured := range r.providers {
+		if (!r.syms || !configured.Supports(provider.CapabilitySymbols)) &&
+			(!r.calls || !configured.Supports(provider.CapabilityCalls)) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), r.budget)
+		response, err := provider.Run(ctx, configured, request)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "changes: %v\n", err)
+			continue
+		}
+		if r.syms && configured.Supports(provider.CapabilitySymbols) {
+			mergeSymbols(syms, response.Symbols)
+		}
+		if r.calls && configured.Supports(provider.CapabilityCalls) {
+			mergeEdges(edges, response.Edges)
+		}
 	}
 	return syms, edges
+}
+
+func mergeSymbols(target, source map[string][]diffview.Symbol) {
+	for path, values := range source {
+		target[path] = append(target[path], values...)
+	}
+}
+
+func mergeEdges(target, source map[string][]diffview.Edge) {
+	for path, values := range source {
+		target[path] = append(target[path], values...)
+	}
 }
 
 // The renderer pads every row to the width it is given, so a width taken from
@@ -444,19 +485,17 @@ func resolveColor(value string) string {
 	return value
 }
 
-func envOr(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
-}
-
 func runDifftool(args []string) {
+	configured, err := appconfig.Load(argumentValue(args, "config"))
+	if err != nil {
+		fail(err)
+	}
 	flags := flag.NewFlagSet("changes difftool", flag.ContinueOnError)
-	diffEngine := flags.String("engine", envOr("CHANGES_DIFF_ENGINE", "git"), "display engine")
-	engineCommand := flags.String("engine-command", os.Getenv("CHANGES_DIFF_COMMAND"), "command display executable")
-	layout := flags.String("layout", envOr("CHANGES_DIFF_LAYOUT", "unified"), "unified or side-by-side")
-	color := flags.String("color", "auto", "auto, always, or never")
+	flags.String("config", argumentValue(args, "config"), "configuration file")
+	diffEngine := flags.String("engine", configured.Diff.Engine, "display engine")
+	engineCommand := flags.String("engine-command", "", "override the configured command executable")
+	layout := flags.String("layout", configured.Diff.Layout, "unified or side-by-side")
+	color := flags.String("color", configured.Color, "auto, always, or never")
 	width := flags.Int("width", 0, "render width")
 	if err := flags.Parse(args); err != nil {
 		fail(err)
@@ -470,7 +509,7 @@ func runDifftool(args []string) {
 	}
 	options := engine.Options{
 		Color:   resolveColor(*color),
-		Command: *engineCommand,
+		Command: commandValue(configured.Diff.Command, *engineCommand),
 		Label:   label,
 		Layout:  *layout,
 		Width:   columns(*width),
@@ -488,11 +527,16 @@ func runDifftool(args []string) {
 }
 
 func runRender(args []string) {
+	configured, err := appconfig.Load(argumentValue(args, "config"))
+	if err != nil {
+		fail(err)
+	}
 	flags := flag.NewFlagSet("changes render", flag.ContinueOnError)
-	diffEngine := flags.String("engine", envOr("CHANGES_DIFF_ENGINE", "git"), "display engine")
-	engineCommand := flags.String("engine-command", os.Getenv("CHANGES_DIFF_COMMAND"), "command display executable")
-	layout := flags.String("layout", envOr("CHANGES_DIFF_LAYOUT", "unified"), "unified or side-by-side")
-	color := flags.String("color", envOr("CHANGES_DIFF_COLOR", "auto"), "auto, always, or never")
+	flags.String("config", argumentValue(args, "config"), "configuration file")
+	diffEngine := flags.String("engine", configured.Diff.Engine, "display engine")
+	engineCommand := flags.String("engine-command", "", "override the configured command executable")
+	layout := flags.String("layout", configured.Diff.Layout, "unified or side-by-side")
+	color := flags.String("color", configured.Color, "auto, always, or never")
 	width := flags.Int("width", envInt("CHANGES_DIFF_WIDTH"), "render width")
 	if err := flags.Parse(args); err != nil {
 		fail(err)
@@ -506,7 +550,7 @@ func runRender(args []string) {
 	}
 	options := engine.Options{
 		Color:   resolveColor(*color),
-		Command: *engineCommand,
+		Command: commandValue(configured.Diff.Command, *engineCommand),
 		Layout:  *layout,
 		Width:   columns(*width),
 	}
@@ -526,12 +570,21 @@ func generateCompletion(args []string) {
 	if len(args) != 1 {
 		fail(fmt.Errorf("completion requires bash, zsh, fish, or nu"))
 	}
-	out, err := completion.Generate(args[0], completion.Command{
+	out, err := completion.Generate(args[0], commandMetadata())
+	if err != nil {
+		fail(err)
+	}
+	fmt.Println(out)
+}
+
+func commandMetadata() completion.Command {
+	return completion.Command{
 		Name:        "changes",
 		Description: "Render Git changes with symbol and call analysis",
 		Flags: []completion.Flag{
 			{Name: "budget", Description: "Analysis time budget", Value: true},
 			{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
+			{Name: "config", Description: "YAML configuration file", Value: true},
 			{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
 			{Name: "engine-command", Description: "Command display executable", Value: true},
 			{Name: "interval", Description: "Watch interval", Value: true},
@@ -552,6 +605,7 @@ func generateCompletion(args []string) {
 				Description: "Compare Git difftool LOCAL and REMOTE files",
 				Flags: []completion.Flag{
 					{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
+					{Name: "config", Description: "YAML configuration file", Value: true},
 					{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
 					{Name: "engine-command", Description: "Command display executable", Value: true},
 					{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
@@ -563,18 +617,88 @@ func generateCompletion(args []string) {
 				Description: "Render a patch from standard input",
 				Flags: []completion.Flag{
 					{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
+					{Name: "config", Description: "YAML configuration file", Value: true},
 					{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
 					{Name: "engine-command", Description: "Command display executable", Value: true},
 					{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
 					{Name: "width", Description: "Render width", Value: true},
 				},
 			},
+			{
+				Name:        "generate",
+				Description: "Generate README command docs and JSON Schema",
+				Flags: []completion.Flag{
+					{Name: "check", Description: "Fail when generated files are stale"},
+				},
+			},
 		},
-	})
+	}
+}
+
+func runGenerate(args []string) {
+	flags := flag.NewFlagSet("changes generate", flag.ContinueOnError)
+	check := flags.Bool("check", false, "fail when generated files are stale")
+	if err := flags.Parse(args); err != nil {
+		fail(err)
+	}
+	if flags.NArg() != 0 {
+		fail(fmt.Errorf("generate accepts only flags"))
+	}
+	schema, err := appconfig.Schema()
 	if err != nil {
 		fail(err)
 	}
-	fmt.Println(out)
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		fail(fmt.Errorf("read README.md: %w", err))
+	}
+	generated, err := completion.ReplaceSection(string(readme), "cli", completion.Markdown(commandMetadata()))
+	if err != nil {
+		fail(err)
+	}
+	outputs := map[string][]byte{
+		"README.md":                  []byte(generated),
+		"schema/changes.schema.json": schema,
+	}
+	for path, data := range outputs {
+		if *check {
+			current, readErr := os.ReadFile(path)
+			if readErr != nil || string(current) != string(data) {
+				fail(fmt.Errorf("%s is stale; run changes generate", path))
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			fail(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			fail(err)
+		}
+	}
+}
+
+func argumentValue(args []string, name string) string {
+	long := "--" + name
+	short := "-" + name
+	for index, argument := range args {
+		if value, ok := strings.CutPrefix(argument, long+"="); ok {
+			return value
+		}
+		if value, ok := strings.CutPrefix(argument, short+"="); ok {
+			return value
+		}
+		if (argument == long || argument == short) && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
+}
+
+func commandValue(configured []string, override string) []string {
+	if strings.TrimSpace(override) == "" {
+		return configured
+	}
+	return strings.Fields(override)
 }
 
 func envInt(name string) int {

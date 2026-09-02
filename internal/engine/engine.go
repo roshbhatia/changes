@@ -14,11 +14,11 @@ import (
 	gitutil "github.com/roshbhatia/go-utils/git"
 )
 
-var Names = []string{"git", "delta", "difftastic", "diff-so-fancy", "internal", "command"}
+var Names = []string{"git", "internal", "command"}
 
 type Options struct {
 	Color   string
-	Command string
+	Command []string
 	Label   string
 	Layout  string
 	Width   int
@@ -35,8 +35,8 @@ func Validate(name string, options Options) error {
 	if options.Layout != "side-by-side" && options.Layout != "unified" {
 		return fmt.Errorf("layout must be side-by-side or unified")
 	}
-	if name == "command" && options.Command == "" {
-		return errors.New("command engine requires -engine-command or CHANGES_DIFF_COMMAND")
+	if name == "command" && len(options.Command) == 0 {
+		return errors.New("command engine requires diff.command in config or -engine-command")
 	}
 	return nil
 }
@@ -52,18 +52,8 @@ func Patch(name string, patch string, options Options) (string, error) {
 			Unified: options.Layout == "unified",
 			Width:   options.Width,
 		}), nil
-	case "delta":
-		args := []string{"--paging=never", "--width", fmt.Sprint(options.Width)}
-		if options.Layout == "side-by-side" {
-			args = append(args, "--side-by-side")
-		}
-		out, err := pipe("delta", args, patch)
-		return normalizeColor(out, options.Color), err
-	case "diff-so-fancy":
-		out, err := pipe("diff-so-fancy", nil, patch)
-		return normalizeColor(out, options.Color), err
 	case "command":
-		out, err := pipe(options.Command, nil, patch)
+		out, err := pipe(options.Command, patch)
 		return normalizeColor(out, options.Color), err
 	default:
 		return "", fmt.Errorf("%s needs repository context", name)
@@ -71,20 +61,20 @@ func Patch(name string, patch string, options Options) (string, error) {
 }
 
 func Files(name, local, remote string, options Options) (string, error) {
-	if name == "difftastic" {
-		args := []string{"--color", colorMode(options.Color), "--display", difftasticLayout(options.Layout), local, remote}
-		return output("difft", args, true)
-	}
 	if name == "command" {
-		out, err := output(options.Command, []string{local, remote}, true)
+		command := expand(options.Command, local, remote, options.Label)
+		if !hasFilePlaceholder(options.Command) {
+			command = append(command, local, remote)
+		}
+		out, err := output(command, true)
 		return normalizeColor(out, options.Color), err
 	}
-	patch, err := output("git", []string{"diff", "--no-index", "--color=never", "--", local, remote}, true)
+	patch, err := output([]string{"git", "diff", "--no-index", "--color=never", "--", local, remote}, true)
 	if err != nil {
 		return "", err
 	}
 	if name == "git" {
-		out, err := output("git", []string{"diff", "--no-index", "--color=" + options.Color, "--", local, remote}, true)
+		out, err := output([]string{"git", "diff", "--no-index", "--color=" + options.Color, "--", local, remote}, true)
 		return labelPatch(out, local, remote, options.Label), err
 	}
 	return Patch(name, labelPatch(patch, local, remote, options.Label), options)
@@ -114,14 +104,14 @@ func labelPatch(patch, local, remote, label string) string {
 	return strings.Join(lines, "\n")
 }
 
-func pipe(command string, args []string, input string) (string, error) {
-	cmd := exec.Command(command, args...)
+func pipe(command []string, input string) (string, error) {
+	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Stdin = strings.NewReader(input)
 	return run(cmd, false)
 }
 
-func output(command string, args []string, differencesOK bool) (string, error) {
-	cmd := exec.Command(command, args...)
+func output(command []string, differencesOK bool) (string, error) {
+	cmd := exec.Command(command[0], command[1:]...)
 	return run(cmd, differencesOK)
 }
 
@@ -143,13 +133,6 @@ func run(cmd *exec.Cmd, differencesOK bool) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func colorMode(value string) string {
-	if value == "never" {
-		return "never"
-	}
-	return "always"
-}
-
 func normalizeColor(output, color string) string {
 	if color == "never" {
 		return ansi.Strip(output)
@@ -157,9 +140,24 @@ func normalizeColor(output, color string) string {
 	return output
 }
 
-func difftasticLayout(value string) string {
-	if value == "side-by-side" {
-		return "side-by-side"
+func expand(command []string, local, remote, merged string) []string {
+	out := make([]string, len(command))
+	for index, argument := range command {
+		replacer := strings.NewReplacer(
+			"$LOCAL", local,
+			"$REMOTE", remote,
+			"$MERGED", merged,
+		)
+		out[index] = replacer.Replace(argument)
 	}
-	return "inline"
+	return out
+}
+
+func hasFilePlaceholder(command []string) bool {
+	for _, argument := range command {
+		if strings.Contains(argument, "$LOCAL") || strings.Contains(argument, "$REMOTE") {
+			return true
+		}
+	}
+	return false
 }

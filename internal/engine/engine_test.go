@@ -10,8 +10,30 @@ import (
 func TestValidateRequiresCommandExecutable(t *testing.T) {
 	t.Parallel()
 	err := Validate("command", Options{Layout: "unified"})
-	if err == nil || !strings.Contains(err.Error(), "CHANGES_DIFF_COMMAND") {
+	if err == nil || !strings.Contains(err.Error(), "diff.command") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFilesExpandsGitDifftoolPlaceholders(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	local := filepath.Join(dir, "local.txt")
+	remote := filepath.Join(dir, "remote.txt")
+	if err := os.WriteFile(local, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(remote, []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Files("command", local, remote, Options{
+		Color: "never", Layout: "unified", Command: []string{"git", "diff", "--no-index", "--", "$LOCAL", "$REMOTE"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "-old") || !strings.Contains(out, "+new") {
+		t.Fatalf("missing file changes:\n%s", out)
 	}
 }
 

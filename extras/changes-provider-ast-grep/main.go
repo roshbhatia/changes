@@ -1,0 +1,93 @@
+// changes-provider-ast-grep adds symbol ranges to the Changes provider protocol.
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/roshbhatia/changes/internal/provider"
+	"github.com/roshbhatia/changes/internal/source"
+	"github.com/roshbhatia/go-utils/diffview"
+)
+
+type outlineFile struct {
+	Path  string `json:"path"`
+	Items []struct {
+		SymbolType string `json:"symbolType"`
+		Name       string `json:"name"`
+		Signature  string `json:"signature"`
+		IsImport   bool   `json:"isImport"`
+		Range      struct {
+			Start struct {
+				Line int `json:"line"`
+			} `json:"start"`
+			End struct {
+				Line int `json:"line"`
+			} `json:"end"`
+		} `json:"range"`
+	} `json:"items"`
+}
+
+func main() {
+	request := provider.Request{}
+	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+		fail(err)
+	}
+	spec := source.Spec{
+		Dir: request.Directory, From: request.From, Staged: request.Staged, To: request.To,
+	}
+	root, files, done := spec.Tree(request.Files)
+	defer done()
+	response := provider.Response{Symbols: outline(root, files)}
+	if err := json.NewEncoder(os.Stdout).Encode(response); err != nil {
+		fail(err)
+	}
+}
+
+func outline(root string, paths []string) map[string][]diffview.Symbol {
+	out := map[string][]diffview.Symbol{}
+	if len(paths) == 0 {
+		return out
+	}
+	command := exec.Command("ast-grep", append([]string{"outline", "--json=compact"}, paths...)...)
+	command.Dir = root
+	blob, err := command.Output()
+	if err != nil {
+		return out
+	}
+	files := []outlineFile{}
+	if json.Unmarshal(blob, &files) != nil {
+		return out
+	}
+	for _, file := range files {
+		key := file.Path
+		if filepath.IsAbs(key) {
+			if relative, err := filepath.Rel(root, key); err == nil {
+				key = relative
+			}
+		}
+		for _, item := range file.Items {
+			if item.IsImport {
+				continue
+			}
+			name := strings.TrimSpace(strings.TrimSuffix(strings.Join(strings.Fields(item.Signature), " "), "{"))
+			if name == "" {
+				name = item.Name
+			}
+			out[key] = append(out[key], diffview.Symbol{
+				Kind: item.SymbolType, Name: name,
+				From: item.Range.Start.Line + 1, To: item.Range.End.Line + 1,
+			})
+		}
+	}
+	return out
+}
+
+func fail(err error) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
+}

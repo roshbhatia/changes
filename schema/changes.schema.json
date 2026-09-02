@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Diff": {
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "engine": {
+          "type": "string",
+          "enum": [
+            "git",
+            "internal",
+            "command"
+          ]
+        },
+        "layout": {
+          "type": "string",
+          "enum": [
+            "unified",
+            "side-by-side"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Manifest": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "minItems": 1
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "command",
+        "capabilities"
+      ]
+    }
+  },
+  "properties": {
+    "color": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "always",
+        "never"
+      ]
+    },
+    "diff": {
+      "$ref": "#/$defs/Diff"
+    },
+    "providers": {
+      "items": {
+        "$ref": "#/$defs/Manifest"
+      },
+      "type": "array"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "title": "Changes configuration"
+}

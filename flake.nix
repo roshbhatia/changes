@@ -41,53 +41,83 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          changes = pkgs.buildGoModule {
-            pname = "changes";
-            version = "0.3.0";
-            src = ./.;
-            vendorHash = "sha256-YGrN2+/99W1njEWpD8IGZ9y8tvWSG9o1KWBNlVyHALI=";
-            nativeBuildInputs = [
-              pkgs.installShellFiles
-              pkgs.makeWrapper
-            ];
-            nativeCheckInputs = [ pkgs.git ];
-            ldflags = [
-              "-s"
-              "-w"
-              "-X main.version=${changes.version}"
-            ];
-            postInstall = ''
-              wrapProgram "$out/bin/changes" \
-                --prefix PATH : ${
-                  pkgs.lib.makeBinPath [
-                    pkgs.ast-grep
-                    pkgs.delta
-                    pkgs.diff-so-fancy
-                    pkgs.difftastic
-                    pkgs.git
-                    pkgs.ripgrep
-                    pkgs.tree-sitter
-                  ]
-                }
-              installShellCompletion \
-                --cmd changes \
-                --bash <("$out/bin/changes" completion bash) \
-                --fish <("$out/bin/changes" completion fish) \
-                --zsh <("$out/bin/changes" completion zsh)
-              mkdir -p "$out/share/nushell/vendor/autoload"
-              "$out/bin/changes" completion nu > "$out/share/nushell/vendor/autoload/changes.nu"
-            '';
-            meta = {
-              description = "Read Git changes as a symbol tree with call edges";
-              homepage = "https://github.com/roshbhatia/changes";
-              license = pkgs.lib.licenses.mit;
-              mainProgram = "changes";
-              platforms = pkgs.lib.platforms.unix;
+          version = "0.4.0";
+          mkPackage =
+            {
+              name,
+              subPackage,
+              runtimeInputs ? [ ],
+              completions ? false,
+            }:
+            pkgs.buildGoModule {
+              pname = name;
+              inherit version;
+              src = ./.;
+              vendorHash = "sha256-f7P1/0Ch4lnYCNVq631OD27a8TY31XJeHqc5fdVsCYg=";
+              subPackages = [ subPackage ];
+              nativeBuildInputs = [ pkgs.makeWrapper ] ++ pkgs.lib.optional completions pkgs.installShellFiles;
+              nativeCheckInputs = [ pkgs.git ];
+              doCheck = completions;
+              checkPhase = pkgs.lib.optionalString completions ''
+                runHook preCheck
+                go test -race ./...
+                go run . generate --check
+                runHook postCheck
+              '';
+              ldflags = pkgs.lib.optionals completions [
+                "-s"
+                "-w"
+                "-X main.version=${version}"
+              ];
+              postInstall = ''
+                wrapProgram "$out/bin/${name}" \
+                  --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
+              ''
+              + pkgs.lib.optionalString completions ''
+                installShellCompletion \
+                  --cmd changes \
+                  --bash <("$out/bin/changes" completion bash) \
+                  --fish <("$out/bin/changes" completion fish) \
+                  --zsh <("$out/bin/changes" completion zsh)
+                mkdir -p "$out/share/nushell/vendor/autoload"
+                "$out/bin/changes" completion nu > "$out/share/nushell/vendor/autoload/changes.nu"
+              '';
+              meta = {
+                description = "Composable Git change viewer component";
+                homepage = "https://github.com/roshbhatia/changes";
+                license = pkgs.lib.licenses.mit;
+                mainProgram = name;
+                platforms = pkgs.lib.platforms.unix;
+              };
             };
+          changes = mkPackage {
+            name = "changes";
+            subPackage = ".";
+            runtimeInputs = [ pkgs.git ];
+            completions = true;
+          };
+          astGrep = mkPackage {
+            name = "changes-provider-ast-grep";
+            subPackage = "./extras/changes-provider-ast-grep";
+            runtimeInputs = [ pkgs.ast-grep ];
+          };
+          calldiff = mkPackage {
+            name = "changes-provider-calldiff";
+            subPackage = "./extras/changes-provider-calldiff";
+          };
+          full = pkgs.symlinkJoin {
+            name = "changes-full-${version}";
+            paths = [
+              changes
+              astGrep
+              calldiff
+            ];
           };
         in
         {
-          inherit changes;
+          inherit changes full;
+          provider-ast-grep = astGrep;
+          provider-calldiff = calldiff;
           default = changes;
         }
       );

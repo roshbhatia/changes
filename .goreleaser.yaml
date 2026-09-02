@@ -10,6 +10,20 @@ builds:
       - -s -w -X main.version={{ .Version }}
     goos: [darwin, linux]
     goarch: [amd64, arm64]
+  - id: changes-provider-ast-grep
+    main: ./extras/changes-provider-ast-grep
+    binary: changes-provider-ast-grep
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+  - id: changes-provider-calldiff
+    main: ./extras/changes-provider-calldiff
+    binary: changes-provider-calldiff
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
 
 archives:
   - formats: [tar.gz]

@@ -1,13 +1,8 @@
-// Package source turns the three tools that describe a change into the layers
-// diffview renders: git for the lines, ast-grep for the symbols, calldiff for
-// the call edges. Each layer degrades on its own, so a language ast-grep cannot
-// parse still prints its hunks.
+// Package source reads repository comparisons through Git.
 package source
 
 import (
-	"bytes"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/roshbhatia/go-utils/git"
@@ -28,34 +23,18 @@ type Spec struct {
 // view's carried lines, and git's default of three is what the renderer was
 // tuned against.
 func (s Spec) Diff() (string, error) {
-	return s.runDiff("never", nil)
+	return s.runDiff("never")
 }
 
 // DisplayDiff asks Git to render its own patch. It is the zero-configuration
 // display engine and stays independent from the analysis patch above it.
 func (s Spec) DisplayDiff(color string) (string, error) {
-	return s.runDiff(color, nil)
+	return s.runDiff(color)
 }
 
-// Difftastic uses Git's external-diff protocol. Git still selects revisions,
-// staged content, and pathspecs, while Difftastic compares each file pair.
-func (s Spec) Difftastic(layout, color string) (string, error) {
-	if layout == "unified" {
-		layout = "inline"
-	}
-	env := map[string]string{
-		"DFT_COLOR":         color,
-		"DFT_DISPLAY":       layout,
-		"GIT_EXTERNAL_DIFF": "difft",
-	}
-	return s.runDiff("never", env)
-}
-
-func (s Spec) args(color string, external bool) []string {
+func (s Spec) args(color string) []string {
 	args := []string{"diff", "--color=" + color, "--find-renames"}
-	if !external {
-		args = append(args, "--no-ext-diff")
-	}
+	args = append(args, "--no-ext-diff")
 	if s.Staged {
 		args = append(args, "--cached")
 	}
@@ -72,36 +51,13 @@ func (s Spec) args(color string, external bool) []string {
 	return args
 }
 
-func (s Spec) runDiff(color string, extraEnv map[string]string) (string, error) {
-	args := s.args(color, len(extraEnv) > 0)
-	if len(extraEnv) == 0 {
-		out, err := git.Output(s.Dir, args...)
-		if err != nil {
-			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-		}
-		return out, nil
-	}
-	cmd := exec.Command("git", args...)
-	cmd.Dir = s.Dir
-	cmd.Env = git.CleanEnv()
-	for key, value := range extraEnv {
-		kept := cmd.Env[:0]
-		for _, entry := range cmd.Env {
-			if !strings.HasPrefix(entry, key+"=") {
-				kept = append(kept, entry)
-			}
-		}
-		cmd.Env = kept
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+func (s Spec) runDiff(color string) (string, error) {
+	args := s.args(color)
+	out, err := git.Output(s.Dir, args...)
 	if err != nil {
-		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return out, nil
 }
 
 // Root resolves the repository the paths are relative to. Every layer keys on
