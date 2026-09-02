@@ -1,5 +1,7 @@
 # changes
 
+![Changes diff view](docs/changes.png)
+
 `changes` reads Git changes as a repository tree. It groups edits under
 symbols and annotates them with changed call edges.
 
@@ -43,5 +45,3 @@ go test -race ./...
 nix flake check
 ./hack/screenshots.sh
 ```
-
-![Changes diff view](docs/changes.png)

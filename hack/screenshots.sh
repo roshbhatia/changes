@@ -20,8 +20,8 @@ printf 'new\nreviewed\n' > "$fixture/note.txt"
 (
   cd "$fixture"
   PATH="$screenshot_bin:$PATH" \
-    CHANGES_DIFF_ENGINE=delta \
-    CHANGES_DIFF_LAYOUT=side-by-side \
+    CHANGES_DIFF_ENGINE=internal \
+    CHANGES_DIFF_LAYOUT=unified \
     freeze --execute "changes -no-calls -no-symbols -color always" \
     --output "$repo_dir/docs/changes.png" \
     --width 1100 \
