@@ -43,9 +43,9 @@
           pkgs = nixpkgs.legacyPackages.${system};
           changes = pkgs.buildGoModule {
             pname = "changes";
-            version = "0.2.3";
+            version = "0.3.0";
             src = ./.;
-            vendorHash = "sha256-dS2stk2YJHM5MFS/7DskZMLeH7mOKWd8e5MWRIwI084=";
+            vendorHash = "sha256-YGrN2+/99W1njEWpD8IGZ9y8tvWSG9o1KWBNlVyHALI=";
             nativeBuildInputs = [
               pkgs.installShellFiles
               pkgs.makeWrapper

@@ -68,3 +68,15 @@ func TestNormalizeColorStripsANSIWhenDisabled(t *testing.T) {
 		t.Fatalf("color was not preserved: %q", got)
 	}
 }
+
+func TestInternalEngineHonorsUnifiedLayout(t *testing.T) {
+	t.Parallel()
+	patch := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n"
+	out, err := Patch("internal", patch, Options{Color: "never", Layout: "unified", Width: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, " │ ") || !strings.Contains(out, "- old") || !strings.Contains(out, "+ new") {
+		t.Fatalf("internal engine did not render a unified diff:\n%s", out)
+	}
+}

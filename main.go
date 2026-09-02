@@ -333,6 +333,7 @@ func (r renderer) draw(patches []string, summary bool) string {
 		Pins:    map[string]bool{},
 		Stat:    r.stat,
 		Summary: summary,
+		Unified: r.engineOptions.Layout == "unified",
 	}
 	for i, patch := range patches {
 		files := diffview.Parse(patch)

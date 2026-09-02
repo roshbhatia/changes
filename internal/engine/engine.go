@@ -47,7 +47,11 @@ func Patch(name string, patch string, options Options) (string, error) {
 	case "git":
 		return patch, nil
 	case "internal":
-		return diffview.Render(diffview.Options{Files: diffview.Parse(patch), Width: options.Width}), nil
+		return diffview.Render(diffview.Options{
+			Files:   diffview.Parse(patch),
+			Unified: options.Layout == "unified",
+			Width:   options.Width,
+		}), nil
 	case "delta":
 		args := []string{"--paging=never", "--width", fmt.Sprint(options.Width)}
 		if options.Layout == "side-by-side" {
