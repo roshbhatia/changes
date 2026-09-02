@@ -41,7 +41,7 @@ printf '%s\n' \
   '    }' \
   '    return nil' \
   '}' \
-  > "$fixture/internal/auth/token.go"
+  >"$fixture/internal/auth/token.go"
 git -C "$fixture" add internal/auth/token.go
 git -C "$fixture" commit -qm initial
 printf '%s\n' \
@@ -84,7 +84,7 @@ printf '%s\n' \
   '    }' \
   '    return nil' \
   '}' \
-  > "$fixture/internal/auth/token.go"
+  >"$fixture/internal/auth/token.go"
 
 (
   cd "$fixture"
@@ -97,4 +97,9 @@ printf '%s\n' \
     --padding 24 \
     --margin 16 \
     --window
+
+  PATH="$screenshot_bin:$PATH" \
+    CHANGES_DIFF_ENGINE=internal \
+    CHANGES_DIFF_LAYOUT=unified \
+    vhs "$repo_dir/hack/changes.tape" --output "$repo_dir/docs/changes.gif"
 )

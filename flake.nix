@@ -127,6 +127,7 @@
               pkgs.ffmpeg
               pkgs.tree-sitter
               pkgs.charm-freeze
+              pkgs.vhs
             ];
             shellHook = ''
               export GOTOOLCHAIN=local

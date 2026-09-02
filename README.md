@@ -2,6 +2,8 @@
 
 ![Changes diff view](docs/changes.png)
 
+![Changes animated diff review](docs/changes.gif)
+
 `changes` reads Git changes as a repository tree. It groups edits under
 symbols and annotates them with changed call edges.
 
