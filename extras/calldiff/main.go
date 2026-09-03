@@ -27,13 +27,20 @@ func main() {
 	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
 		fail(err)
 	}
-	response := provider.Response{Edges: calls(request)}
+	if request.Version != provider.ProtocolVersion || request.Action != provider.ActionCalls {
+		fail(fmt.Errorf("unsupported request %q %q", request.Version, request.Action))
+	}
+	edges, err := calls(request)
+	if err != nil {
+		fail(err)
+	}
+	response := provider.Response{Version: provider.ProtocolVersion, Edges: edges}
 	if err := json.NewEncoder(os.Stdout).Encode(response); err != nil {
 		fail(err)
 	}
 }
 
-func calls(request provider.Request) map[string][]diffview.Edge {
+func calls(request provider.Request) (map[string][]diffview.Edge, error) {
 	out := map[string][]diffview.Edge{}
 	args := []string{"diff"}
 	if request.From != "" {
@@ -46,13 +53,13 @@ func calls(request provider.Request) map[string][]diffview.Edge {
 	args = append(args, request.Files...)
 	command := exec.Command("calldiff", args...)
 	command.Dir = request.Directory
-	blob, err := command.Output()
+	blob, err := command.CombinedOutput()
 	if err != nil {
-		return out
+		return nil, fmt.Errorf("calldiff: %s: %w", strings.TrimSpace(string(blob)), err)
 	}
 	trees := callTrees{}
-	if json.Unmarshal(blob, &trees) != nil {
-		return out
+	if err := json.Unmarshal(blob, &trees); err != nil {
+		return nil, fmt.Errorf("decode calldiff output: %w", err)
 	}
 	seen := map[string]map[diffview.Edge]bool{}
 	for _, tree := range trees.Trees {
@@ -79,7 +86,7 @@ func calls(request provider.Request) map[string][]diffview.Edge {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 func fail(err error) {

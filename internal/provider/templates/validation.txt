@@ -1,0 +1,6 @@
+{{- range . }}
+{{ .Mark }} {{ .Name }}
+{{- range .Checks }}
+  {{ .Mark }} {{ printf "%-12s" .Kind }} {{ .Target }}{{ with .Message }} · {{ . }}{{ end }}
+{{- end }}
+{{ end -}}

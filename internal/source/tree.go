@@ -14,7 +14,7 @@ import (
 //
 // The working tree is its own answer, so the common case copies nothing. Any
 // other side is checked out into a temporary mirror, which keeps each path's
-// extension and so keeps ast-grep's language detection.
+// extension and so keeps an analysis provider's language detection.
 func (s Spec) Tree(paths []string) (dir string, kept []string, done func()) {
 	if !s.Staged && s.To == "" {
 		for _, p := range paths {

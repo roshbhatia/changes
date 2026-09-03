@@ -2,15 +2,23 @@
 package appconfig
 
 import (
-	"github.com/roshbhatia/changes/internal/provider"
+	"time"
+
 	sharedconfig "github.com/roshbhatia/go-utils/config"
+	providerlib "github.com/roshbhatia/go-utils/provider"
 )
 
 // Config is loaded from YAML, then overridden by CHANGES_* environment values.
 type Config struct {
-	Color     string              `json:"color,omitempty" yaml:"color" jsonschema:"enum=auto,enum=always,enum=never"`
-	Diff      Diff                `json:"diff,omitempty" yaml:"diff"`
-	Providers []provider.Manifest `json:"providers,omitempty" yaml:"providers"`
+	Color     string    `json:"color,omitempty" yaml:"color" jsonschema:"enum=auto,enum=always,enum=never"`
+	Diff      Diff      `json:"diff,omitempty" yaml:"diff"`
+	Providers Providers `json:"providers,omitempty" yaml:"providers"`
+}
+
+// Providers controls external provider discovery and execution.
+type Providers struct {
+	Directory string               `json:"directory,omitempty" yaml:"directory,omitempty"`
+	Timeout   providerlib.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // Diff selects the built-in renderer or a generic patch command.
@@ -28,6 +36,7 @@ func Default() Config {
 			Engine: "git",
 			Layout: "unified",
 		},
+		Providers: Providers{Timeout: providerlib.Duration(20 * time.Second)},
 	}
 }
 

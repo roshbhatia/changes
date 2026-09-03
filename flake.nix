@@ -41,27 +41,36 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          version = "0.5.0";
+          version = "0.6.0";
           mkPackage =
             {
               name,
               subPackage,
               runtimeInputs ? [ ],
               completions ? false,
+              providerManifest ? null,
+              providerName ? name,
+              builtName ? name,
             }:
             pkgs.buildGoModule {
               pname = name;
               inherit version;
               src = ./.;
-              vendorHash = "sha256-b+N4FUKQE3xhVzUBKVTQScsYjFJx8+/bHtLYx7DcSgA=";
+              vendorHash = "sha256-BoQxSWsOzt3a9Z02unXcJUpl6k6C/Lgc61qSvy+vCCE=";
               subPackages = [ subPackage ];
               nativeBuildInputs = [ pkgs.makeWrapper ] ++ pkgs.lib.optional completions pkgs.installShellFiles;
-              nativeCheckInputs = [ pkgs.git ];
+              nativeCheckInputs = [
+                pkgs.cue
+                pkgs.git
+              ];
               doCheck = completions;
               checkPhase = pkgs.lib.optionalString completions ''
                 runHook preCheck
                 go test -race ./...
                 go run . generate --check
+                for manifest in extras/*/provider.yaml; do
+                  cue vet schema/provider.cue "$manifest" -d '#Provider'
+                done
                 runHook postCheck
               '';
               ldflags = pkgs.lib.optionals completions [
@@ -70,6 +79,9 @@
                 "-X main.version=${version}"
               ];
               postInstall = ''
+                ${pkgs.lib.optionalString (builtName != name) ''
+                  mv "$out/bin/${builtName}" "$out/bin/${name}"
+                ''}
                 wrapProgram "$out/bin/${name}" \
                   --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
               ''
@@ -81,6 +93,10 @@
                   --zsh <("$out/bin/changes" completion zsh)
                 mkdir -p "$out/share/nushell/vendor/autoload"
                 "$out/bin/changes" completion nu > "$out/share/nushell/vendor/autoload/changes.nu"
+              ''
+              + pkgs.lib.optionalString (providerManifest != null) ''
+                mkdir -p "$out/share/changes/providers/${providerName}"
+                install -m 0444 ${providerManifest} "$out/share/changes/providers/${providerName}/provider.yaml"
               '';
               meta = {
                 description = "Composable Git change viewer component";
@@ -98,12 +114,18 @@
           };
           astGrep = mkPackage {
             name = "changes-provider-ast-grep";
-            subPackage = "./extras/changes-provider-ast-grep";
+            subPackage = "./extras/ast-grep";
             runtimeInputs = [ pkgs.ast-grep ];
+            providerManifest = ./extras/ast-grep/provider.yaml;
+            providerName = "ast-grep";
+            builtName = "ast-grep";
           };
           calldiff = mkPackage {
             name = "changes-provider-calldiff";
-            subPackage = "./extras/changes-provider-calldiff";
+            subPackage = "./extras/calldiff";
+            providerManifest = ./extras/calldiff/provider.yaml;
+            providerName = "calldiff";
+            builtName = "calldiff";
           };
           full = pkgs.symlinkJoin {
             name = "changes-full-${version}";
@@ -146,6 +168,7 @@
               pkgs.gotools
               pkgs.go-tools
               pkgs.goreleaser
+              pkgs.cue
               pkgs.ripgrep
               pkgs.shfmt
               pkgs.ast-grep

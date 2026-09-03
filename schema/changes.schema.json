@@ -28,42 +28,22 @@
       "additionalProperties": false,
       "type": "object"
     },
-    "Manifest": {
+    "Duration": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+      "description": "Go duration such as 500ms, 10s, or 2m"
+    },
+    "Providers": {
       "properties": {
-        "name": {
+        "directory": {
           "type": "string"
         },
-        "command": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "minItems": 1
-        },
-        "capabilities": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "minItems": 1
-        },
-        "description": {
-          "type": "string"
-        },
-        "requires": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+        "timeout": {
+          "$ref": "#/$defs/Duration"
         }
       },
       "additionalProperties": false,
-      "type": "object",
-      "required": [
-        "name",
-        "command",
-        "capabilities"
-      ]
+      "type": "object"
     }
   },
   "properties": {
@@ -79,10 +59,7 @@
       "$ref": "#/$defs/Diff"
     },
     "providers": {
-      "items": {
-        "$ref": "#/$defs/Manifest"
-      },
-      "type": "array"
+      "$ref": "#/$defs/Providers"
     }
   },
   "additionalProperties": false,

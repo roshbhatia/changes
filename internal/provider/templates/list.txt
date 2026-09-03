@@ -1,0 +1,7 @@
+{{- range . }}
+{{ .Name }}
+  {{ .Description }}
+  provides  {{ .Actions }}
+  command   {{ .Command }}
+  manifest  {{ .Path }}
+{{ end -}}

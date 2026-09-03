@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=../../schema/provider.schema.json
+version: provider/v1
+name: ast-grep
+description: Map changed lines to source symbols with ast-grep
+command: [changes-provider-ast-grep]
+actions:
+  changes.symbols:
+    description: Map changed lines to their enclosing source symbols
+requires:
+  commands: [ast-grep]
+defaults:
+  timeout: 20s
+  priority: 100

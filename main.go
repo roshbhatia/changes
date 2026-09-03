@@ -85,9 +85,9 @@ func main() {
 	flag.BoolVar(watch, "w", false, "shorthand for -watch")
 	every := flag.Duration("interval", 700*time.Millisecond, "how often -watch re-reads the diff")
 	width := flag.Int("width", 0, "render at this width (default: the terminal's)")
-	noCalls := flag.Bool("no-calls", false, "skip calldiff, which is the slow layer")
-	noSyms := flag.Bool("no-symbols", false, "skip the ast-grep outline layer")
-	budget := flag.Duration("budget", 20*time.Second, "how long the outline and call layers may take")
+	noCalls := flag.Bool("no-calls", false, "skip call-edge analysis")
+	noSyms := flag.Bool("no-symbols", false, "skip symbol analysis")
+	budget := flag.Duration("budget", time.Duration(configured.Providers.Timeout), "how long each analysis provider may take")
 	recurse := flag.Bool("recursive", false, "read every repository under the workspace")
 	flag.BoolVar(recurse, "r", false, "shorthand for -recursive")
 	scan := flag.String("root", "", "scan from here with -r, instead of the workspace")
@@ -120,6 +120,14 @@ func main() {
 	}
 	if err := engine.Validate(*diffEngine, engineOptions); err != nil {
 		fail(err)
+	}
+	loadedProviders, err := provider.Discover(configured.Providers.Directory)
+	if err != nil {
+		fail(err)
+	}
+	providers := make([]provider.Manifest, 0, len(loadedProviders))
+	for _, loaded := range loadedProviders {
+		providers = append(providers, loaded.Manifest)
 	}
 
 	dir, err := os.Getwd()
@@ -190,7 +198,7 @@ func main() {
 		color:         resolvedColor,
 		engine:        *diffEngine,
 		engineOptions: engineOptions,
-		providers:     configured.Providers,
+		providers:     providers,
 	}
 
 	if !*watch {
@@ -403,22 +411,25 @@ func (r renderer) layers(spec source.Spec, files []diffview.File, patch string) 
 		To:          spec.To,
 	}
 	for _, configured := range r.providers {
-		if (!r.syms || !configured.Supports(provider.CapabilitySymbols)) &&
-			(!r.calls || !configured.Supports(provider.CapabilityCalls)) {
-			continue
+		if r.syms && provider.Supports(configured, provider.ActionSymbols) {
+			ctx, cancel := context.WithTimeout(context.Background(), r.budget)
+			response, err := provider.Run(ctx, configured, provider.ActionSymbols, request)
+			cancel()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "changes: %v\n", err)
+			} else {
+				mergeSymbols(syms, response.Symbols)
+			}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), r.budget)
-		response, err := provider.Run(ctx, configured, request)
-		cancel()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "changes: %v\n", err)
-			continue
-		}
-		if r.syms && configured.Supports(provider.CapabilitySymbols) {
-			mergeSymbols(syms, response.Symbols)
-		}
-		if r.calls && configured.Supports(provider.CapabilityCalls) {
-			mergeEdges(edges, response.Edges)
+		if r.calls && provider.Supports(configured, provider.ActionCalls) {
+			ctx, cancel := context.WithTimeout(context.Background(), r.budget)
+			response, err := provider.Run(ctx, configured, provider.ActionCalls, request)
+			cancel()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "changes: %v\n", err)
+			} else {
+				mergeEdges(edges, response.Edges)
+			}
 		}
 	}
 	return syms, edges
@@ -666,13 +677,15 @@ func runProvider(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	providers := append([]provider.Manifest{}, configured.Providers...)
-	sort.Slice(providers, func(left, right int) bool { return providers[left].Name < providers[right].Name })
+	providers, err := provider.Discover(configured.Providers.Directory)
+	if err != nil {
+		fail(err)
+	}
 	if flags.NArg() == 1 {
 		name := flags.Arg(0)
-		selected := []provider.Manifest{}
+		selected := []provider.LoadedManifest{}
 		for _, manifest := range providers {
-			if manifest.Name == name {
+			if manifest.Manifest.Name == name {
 				selected = append(selected, manifest)
 			}
 		}
@@ -691,12 +704,12 @@ func runProvider(args []string) {
 			fmt.Println("No analysis providers are configured.")
 			return
 		}
-		for _, manifest := range providers {
-			description := manifest.Description
-			if description == "" {
-				description = "Repository analysis provider"
-			}
-			fmt.Printf("%s\n  %s\n  provides  %s\n  command   %s\n", manifest.Name, description, strings.Join(manifest.Capabilities, ", "), strings.Join(manifest.Command, " "))
+		output, err := provider.RenderList(providers)
+		if err != nil {
+			fail(err)
+		}
+		if output != "" {
+			fmt.Println(output)
 		}
 		return
 	}
@@ -711,29 +724,22 @@ func runProvider(args []string) {
 	results := make([]provider.Validation, 0, len(providers))
 	failed := false
 	for _, manifest := range providers {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(configured.Providers.Timeout))
 		result := provider.Validate(ctx, manifest)
 		cancel()
 		results = append(results, result)
-		failed = failed || result.Status != "ok"
+		failed = failed || !result.OK()
 	}
 	if *asJSON {
 		data, _ := json.Marshal(results)
 		fmt.Println(string(data))
 	} else {
-		for _, result := range results {
-			mark := "+"
-			if result.Status != "ok" {
-				mark = "x"
-			}
-			fmt.Printf("%s %s · %s\n", mark, result.Name, strings.Join(result.Capabilities, ", "))
-			for _, check := range result.Checks {
-				checkMark := "+"
-				if check.Status != "ok" {
-					checkMark = "x"
-				}
-				fmt.Printf("  %s %-12s %s\n", checkMark, check.Name, check.Message)
-			}
+		output, err := provider.RenderValidations(results)
+		if err != nil {
+			fail(err)
+		}
+		if output != "" {
+			fmt.Println(output)
 		}
 	}
 	if failed {
@@ -754,6 +760,10 @@ func runGenerate(args []string) {
 	if err != nil {
 		fail(err)
 	}
+	providerSchema, err := provider.Schema()
+	if err != nil {
+		fail(err)
+	}
 	readme, err := os.ReadFile("README.md")
 	if err != nil {
 		fail(fmt.Errorf("read README.md: %w", err))
@@ -763,8 +773,9 @@ func runGenerate(args []string) {
 		fail(err)
 	}
 	outputs := map[string][]byte{
-		"README.md":                  []byte(generated),
-		"schema/changes.schema.json": schema,
+		"README.md":                   []byte(generated),
+		"schema/changes.schema.json":  schema,
+		"schema/provider.schema.json": providerSchema,
 	}
 	for path, data := range outputs {
 		if *check {

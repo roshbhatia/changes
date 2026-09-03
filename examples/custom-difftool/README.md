@@ -9,7 +9,6 @@ diff:
   engine: command
   layout: side-by-side
   command: [difft, --color, always, --display, side-by-side, $LOCAL, $REMOTE]
-providers: []
 ```
 
 Then use the same driver from Git or another tool:

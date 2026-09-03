@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=../../schema/provider.schema.json
+version: provider/v1
+name: calldiff
+description: Find call edges changed by the patch with calldiff
+command: [changes-provider-calldiff]
+actions:
+  changes.calls:
+    description: Find call edges added or removed by the comparison
+requires:
+  commands: [calldiff]
+defaults:
+  timeout: 20s
+  priority: 90

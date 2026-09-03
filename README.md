@@ -9,8 +9,8 @@ symbols and annotates them with changed call edges.
 
 The core depends only on Git. Optional analysis and display tools run through
 external command contracts. The `extras/` directory contains reference
-providers for ast-grep and calldiff. Provider responses are cached by command
-and patch fingerprint under the user cache directory.
+providers for ast-grep and calldiff. Provider responses are cached by manifest,
+action, and patch fingerprint under the user cache directory.
 
 ## Use it
 
@@ -46,16 +46,7 @@ diff:
   layout: unified
   command: [delta, --paging=never]
 providers:
-  - name: symbols
-    description: Map changed lines to source symbols with ast-grep
-    command: [changes-provider-ast-grep]
-    capabilities: [symbols]
-    requires: [ast-grep]
-  - name: calls
-    description: Find call edges changed by the patch with calldiff
-    command: [changes-provider-calldiff]
-    capabilities: [calls]
-    requires: [calldiff]
+  timeout: 20s
 ```
 
 The command display engine reads a patch from standard input. During
@@ -63,16 +54,44 @@ The command display engine reads a patch from standard input. During
 difftool convention. If no file placeholders exist, Changes appends the local
 and remote paths.
 
-Inspect and test providers without rendering a real repository:
+Changes loads user manifests from `~/.config/changes/providers`, then installed
+manifests from `XDG_DATA_DIRS/changes/providers/<name>/provider.yaml`. Flat
+manifest files remain valid in a user directory. A user manifest overrides an
+installed manifest with the same name. Set `providers.directory` or
+`CHANGES_PROVIDERS_DIRECTORY` to use one explicit user directory.
+
+Each provider uses the shared `provider/v1` manifest. Actions add arguments and
+environment values through Go templates. Changes executes the resulting argv
+directly and never inserts a shell. The core only knows the semantic actions
+`changes.symbols` and `changes.calls`.
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/roshbhatia/changes/main/schema/provider.schema.json
+version: provider/v1
+name: ast-grep
+description: Map changed lines to source symbols with ast-grep
+command: [changes-provider-ast-grep]
+actions:
+  changes.symbols:
+    description: Map changed lines to their enclosing source symbols
+requires:
+  commands: [ast-grep]
+defaults:
+  timeout: 20s
+  priority: 100
+```
+
+Inspect and test discovered providers without rendering the current repository:
 
 ```bash
 changes provider list
 changes provider validate
-changes provider validate symbols
+changes provider validate ast-grep
 ```
 
-Validation checks each YAML manifest, resolves its executable, sends a
-synthetic repository request, and verifies the JSON response.
+Validation checks each manifest and host dependency. It then creates a temporary
+Git repository, runs every advertised Changes action, and checks the returned
+symbol or call data.
 
 Generate the schema and command reference with `changes generate`. CI uses
 `changes generate --check` to reject stale output.
@@ -167,6 +186,7 @@ Validate provider commands and JSON behavior
 nix develop
 go test -race ./...
 go run . generate --check
+cue vet schema/provider.cue extras/ast-grep/provider.yaml -d '#Provider'
 nix flake check
 ./hack/screenshots.sh
 ```
