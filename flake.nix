@@ -126,7 +126,10 @@
             pkgs.symlinkJoin {
               name = "changes-provider-${name}-${version}";
               paths = [ adapter ] ++ runtimeInputs;
-              passthru.providerRuntimeInputs = runtimeInputs;
+              passthru = {
+                inherit adapter;
+                providerRuntimeInputs = runtimeInputs;
+              };
               meta = adapter.meta;
             };
           providerNames = builtins.filter (name: builtins.pathExists (./extras + "/${name}/package.nix")) (
@@ -138,6 +141,11 @@
               value = import (./extras + "/${name}/package.nix") { inherit mkProvider pkgs; };
             }) providerNames
           );
+          extras = pkgs.symlinkJoin {
+            name = "changes-providers-${version}";
+            paths = map (provider: provider.adapter) (builtins.attrValues providers);
+            passthru.providers = providers;
+          };
           full = pkgs.symlinkJoin {
             name = "changes-full-${version}";
             paths = [ changes ] ++ builtins.attrValues providers;
@@ -152,7 +160,7 @@
           };
         in
         {
-          inherit changes full;
+          inherit changes extras full;
           default = changes;
         }
         // builtins.listToAttrs (
@@ -204,6 +212,14 @@
           providerRuntimeInputs = pkgs.lib.unique (
             pkgs.lib.concatMap (name: packages."provider-${name}".providerRuntimeInputs) providerNames
           );
+          providerAggregateBoundary = pkgs.runCommand "changes-provider-aggregate-boundary" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (name: ''
+              test -x ${packages.extras}/bin/changes-provider-${name}
+              test ! -e ${packages.extras}/bin/${name}
+              test -f ${packages.extras}/share/changes/providers/${name}/provider.yaml
+            '') providerNames}
+            touch "$out"
+          '';
           coreRuntimePaths = map toString packages.default.runtimeInputs;
           providerExclusiveRuntimeInputs = builtins.filter (
             runtime: !(builtins.elem (toString runtime) coreRuntimePaths)
@@ -211,6 +227,7 @@
         in
         {
           default = packages.default;
+          provider-aggregate-boundary = providerAggregateBoundary;
           provider-boundary =
             pkgs.runCommand "changes-provider-boundary"
               {
