@@ -7,15 +7,23 @@ import (
 	"testing"
 )
 
-func TestValidateRequiresCommandExecutable(t *testing.T) {
+func TestValidateRequiresDifftoolExecutable(t *testing.T) {
 	t.Parallel()
-	err := Validate("command", Options{Layout: "unified"})
-	if err == nil || !strings.Contains(err.Error(), "diff.command") {
+	err := ValidateFiles("difftool", Options{Layout: "unified"})
+	if err == nil || !strings.Contains(err.Error(), "diff.difftool") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestFilesExpandsGitDifftoolPlaceholders(t *testing.T) {
+func TestValidateRequiresPatchFilterExecutable(t *testing.T) {
+	t.Parallel()
+	err := ValidatePatch("filter", Options{Layout: "unified"})
+	if err == nil || !strings.Contains(err.Error(), "diff.filter") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFilesExpandsDifftoolPlaceholders(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	local := filepath.Join(dir, "local.txt")
@@ -26,8 +34,9 @@ func TestFilesExpandsGitDifftoolPlaceholders(t *testing.T) {
 	if err := os.WriteFile(remote, []byte("new\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := Files("command", local, remote, Options{
-		Color: "never", Layout: "unified", Command: []string{"git", "diff", "--no-index", "--", "$LOCAL", "$REMOTE"},
+	out, err := Files("difftool", local, remote, Options{
+		Color: "never", Layout: "unified",
+		Difftool: []string{"/bin/sh", "-c", `diff -u "$1" "$2"`, "difftool", "$LOCAL", "$REMOTE"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +46,7 @@ func TestFilesExpandsGitDifftoolPlaceholders(t *testing.T) {
 	}
 }
 
-func TestFilesUsesGitWithoutExternalTools(t *testing.T) {
+func TestFilesUsesBuiltinFallbackWithoutExternalTools(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	local := filepath.Join(dir, "local.txt")
@@ -48,7 +57,7 @@ func TestFilesUsesGitWithoutExternalTools(t *testing.T) {
 	if err := os.WriteFile(remote, []byte("new\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := Files("git", local, remote, Options{Color: "never", Layout: "unified", Width: 80})
+	out, err := Files("builtin", local, remote, Options{Color: "never", Layout: "unified", Width: 80})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +69,7 @@ func TestFilesUsesGitWithoutExternalTools(t *testing.T) {
 func TestFilesUsesMergedLabel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	local := filepath.Join(dir, "git-blob", "file.txt")
+	local := filepath.Join(dir, "temporary", "file.txt")
 	remote := filepath.Join(dir, "file.txt")
 	if err := os.MkdirAll(filepath.Dir(local), 0o700); err != nil {
 		t.Fatal(err)
@@ -71,11 +80,12 @@ func TestFilesUsesMergedLabel(t *testing.T) {
 	if err := os.WriteFile(remote, []byte("new\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := Files("git", local, remote, Options{Color: "never", Label: "src/file.txt", Layout: "unified", Width: 80})
+	out, err := Files("builtin", local, remote, Options{Color: "always", Label: "src/file.txt", Layout: "unified", Width: 80})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "git-blob") || !strings.Contains(out, "src/file.txt") {
+	plain := normalizeColor(out, "never")
+	if out == plain || strings.Contains(plain, "temporary") || !strings.Contains(plain, "src/file.txt") {
 		t.Fatalf("label was not applied:\n%s", out)
 	}
 }
@@ -91,14 +101,59 @@ func TestNormalizeColorStripsANSIWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestInternalEngineHonorsUnifiedLayout(t *testing.T) {
+func TestBuiltinEnginePreservesUnifiedPatch(t *testing.T) {
 	t.Parallel()
-	patch := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n"
-	out, err := Patch("internal", patch, Options{Color: "never", Layout: "unified", Width: 120})
+	patch := `--- a/file.txt
++++ b/file.txt
+@@ -1 +1 @@
+-old
++new
+`
+	out, err := Patch("builtin", patch, Options{Color: "never", Layout: "unified", Width: 80})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, " │ ") || !strings.Contains(out, "- old") || !strings.Contains(out, "+ new") {
-		t.Fatalf("internal engine did not render a unified diff:\n%s", out)
+	if out != patch {
+		t.Fatalf("builtin unified output changed the patch:\n%s", out)
+	}
+}
+
+func TestBuiltinUnifiedStripsColorWhenDisabled(t *testing.T) {
+	t.Parallel()
+	patch := "\x1b[31m-old\x1b[0m\n"
+	out, err := Patch("builtin", patch, Options{Color: "never", Layout: "unified", Width: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "-old\n" {
+		t.Fatalf("builtin unified output retained color: %q", out)
+	}
+}
+
+func TestPatchFilterRejectsFilePlaceholders(t *testing.T) {
+	t.Parallel()
+	_, err := Patch("filter", "patch", Options{
+		Color: "never", Filter: []string{"review", "$LOCAL", "$REMOTE"}, Layout: "unified",
+	})
+	if err == nil || !strings.Contains(err.Error(), "diff.difftool") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuiltinEngineHonorsSideBySideLayout(t *testing.T) {
+	t.Parallel()
+	patch := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1 @@
+-old
++new
+`
+	out, err := Patch("builtin", patch, Options{Color: "never", Layout: "side-by-side", Width: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, " │ ") {
+		t.Fatalf("builtin engine did not render a side-by-side diff:\n%s", out)
 	}
 }

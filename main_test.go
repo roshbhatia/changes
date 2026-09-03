@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/roshbhatia/changes/internal/engine"
+	"github.com/roshbhatia/changes/internal/source"
 	"github.com/roshbhatia/go-utils/completion"
 )
 
@@ -47,4 +49,30 @@ func TestVersionHelperProcess(t *testing.T) {
 		}
 	}
 	os.Exit(2)
+}
+
+func TestDefaultRendererKeepsUnifiedGitPatch(t *testing.T) {
+	directory, err := source.ValidationFixture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(directory) }()
+	view := renderer{
+		specs:  []source.Spec{{Dir: directory}},
+		width:  80,
+		color:  "never",
+		engine: "builtin",
+		engineOptions: engine.Options{
+			Color: "never", Layout: "unified", Width: 80,
+		},
+	}
+	out, err := view.render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"diff --git a/main.ts b/main.ts", "-  return false", "+  return true"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("default output omitted %q:\n%s", want, out)
+		}
+	}
 }

@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/roshbhatia/changes/main/schema/changes.schema.json
 color: auto
 diff:
-  engine: git
+  engine: builtin
   layout: unified
 providers:
   timeout: 20s

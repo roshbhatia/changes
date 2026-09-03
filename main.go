@@ -1,8 +1,5 @@
-// changes prints a diff the way a reviewer reads one: an eza shaped tree of
-// the touched files, each file's hunks grouped under the outline symbol that
-// owns them, and each symbol annotated with the call edges the edit added or
-// removed. It is the same renderer traces draws in its inspector, over git
-// instead of over a trace.
+// changes prints a review-oriented diff. It groups touched files in a tree,
+// nests hunks under their enclosing symbols, and annotates changed call edges.
 package main
 
 import (
@@ -94,31 +91,22 @@ func main() {
 	stat := flag.Bool("stat", false, "draw the tree and the churn, without the hunks")
 	flag.BoolVar(stat, "s", false, "shorthand for -stat")
 	color := flag.String("color", configured.Color, "color output: auto, always, or never")
-	diffEngine := flag.String("engine", configured.Diff.Engine, "display engine: git, internal, or command")
-	engineCommand := flag.String("engine-command", "", "override the configured patch command")
+	diffEngine := flag.String("engine", configured.Diff.Engine, "patch display engine: builtin or filter")
+	filter := flag.String("filter", "", "override the configured stdin patch filter")
 	layout := flag.String("layout", configured.Diff.Layout, "diff layout: unified or side-by-side")
 	flag.Usage = func() {
 		_, _ = fmt.Fprint(flag.CommandLine.Output(), usage)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	resolvedColor := resolveColor(*color)
-	switch resolvedColor {
-	case "auto":
-	case "always":
-		lipgloss.SetColorProfile(termenv.ANSI)
-	case "never":
-		lipgloss.SetColorProfile(termenv.Ascii)
-	default:
-		fail(fmt.Errorf("-color must be auto, always, or never"))
-	}
+	resolvedColor := configureColor(*color)
 	engineOptions := engine.Options{
-		Color:   resolvedColor,
-		Command: commandValue(configured.Diff.Command, *engineCommand),
-		Layout:  *layout,
-		Width:   columns(*width),
+		Color:  resolvedColor,
+		Filter: commandValue(configured.Diff.Filter, *filter),
+		Layout: *layout,
+		Width:  columns(*width),
 	}
-	if err := engine.Validate(*diffEngine, engineOptions); err != nil {
+	if err := engine.ValidatePatch(*diffEngine, engineOptions); err != nil {
 		fail(err)
 	}
 	loadedProviders, err := provider.Discover(configured.Providers.Directory)
@@ -280,7 +268,7 @@ func (r renderer) render() (string, error) {
 }
 
 func (r renderer) renderPatches(patches []string) (string, error) {
-	if r.stat || r.engine == "internal" {
+	if r.stat || (r.engine == "builtin" && r.engineOptions.Layout == "side-by-side") {
 		return r.draw(patches, false), nil
 	}
 	body, err := r.display(patches)
@@ -299,7 +287,7 @@ func (r renderer) renderPatches(patches []string) (string, error) {
 
 func (r renderer) display(patches []string) (string, error) {
 	outputs := make([]string, 0, len(r.specs))
-	if r.engine == "git" {
+	if r.engine == "builtin" {
 		for _, spec := range r.specs {
 			output, err := spec.DisplayDiff(r.color)
 			if err != nil {
@@ -501,6 +489,19 @@ func resolveColor(value string) string {
 	return value
 }
 
+func configureColor(value string) string {
+	resolved := resolveColor(value)
+	switch resolved {
+	case "always":
+		lipgloss.SetColorProfile(termenv.ANSI)
+	case "never":
+		lipgloss.SetColorProfile(termenv.Ascii)
+	default:
+		fail(fmt.Errorf("-color must be auto, always, or never"))
+	}
+	return resolved
+}
+
 func runDifftool(args []string) {
 	configured, err := appconfig.Load(argumentValue(args, "config"))
 	if err != nil {
@@ -508,8 +509,8 @@ func runDifftool(args []string) {
 	}
 	flags := flag.NewFlagSet("changes difftool", flag.ContinueOnError)
 	flags.String("config", argumentValue(args, "config"), "configuration file")
-	diffEngine := flags.String("engine", configured.Diff.Engine, "display engine")
-	engineCommand := flags.String("engine-command", "", "override the configured command executable")
+	diffEngine := flags.String("engine", fileEngine(configured.Diff.Difftool), "file comparison engine: builtin or difftool")
+	difftool := flags.String("difftool", "", "override the configured Git-compatible difftool")
 	layout := flags.String("layout", configured.Diff.Layout, "unified or side-by-side")
 	color := flags.String("color", configured.Color, "auto, always, or never")
 	width := flags.Int("width", 0, "render width")
@@ -524,13 +525,13 @@ func runDifftool(args []string) {
 		label = flags.Arg(2)
 	}
 	options := engine.Options{
-		Color:   resolveColor(*color),
-		Command: commandValue(configured.Diff.Command, *engineCommand),
-		Label:   label,
-		Layout:  *layout,
-		Width:   columns(*width),
+		Color:    configureColor(*color),
+		Difftool: commandValue(configured.Diff.Difftool, *difftool),
+		Label:    label,
+		Layout:   *layout,
+		Width:    columns(*width),
 	}
-	if err := engine.Validate(*diffEngine, options); err != nil {
+	if err := engine.ValidateFiles(*diffEngine, options); err != nil {
 		fail(err)
 	}
 	out, err := engine.Files(*diffEngine, flags.Arg(0), flags.Arg(1), options)
@@ -549,8 +550,8 @@ func runRender(args []string) {
 	}
 	flags := flag.NewFlagSet("changes render", flag.ContinueOnError)
 	flags.String("config", argumentValue(args, "config"), "configuration file")
-	diffEngine := flags.String("engine", configured.Diff.Engine, "display engine")
-	engineCommand := flags.String("engine-command", "", "override the configured command executable")
+	diffEngine := flags.String("engine", configured.Diff.Engine, "patch display engine: builtin or filter")
+	filter := flags.String("filter", "", "override the configured stdin patch filter")
 	layout := flags.String("layout", configured.Diff.Layout, "unified or side-by-side")
 	color := flags.String("color", configured.Color, "auto, always, or never")
 	width := flags.Int("width", envInt("CHANGES_DIFF_WIDTH"), "render width")
@@ -565,12 +566,12 @@ func runRender(args []string) {
 		fail(err)
 	}
 	options := engine.Options{
-		Color:   resolveColor(*color),
-		Command: commandValue(configured.Diff.Command, *engineCommand),
-		Layout:  *layout,
-		Width:   columns(*width),
+		Color:  configureColor(*color),
+		Filter: commandValue(configured.Diff.Filter, *filter),
+		Layout: *layout,
+		Width:  columns(*width),
 	}
-	if err := engine.Validate(*diffEngine, options); err != nil {
+	if err := engine.ValidatePatch(*diffEngine, options); err != nil {
 		fail(err)
 	}
 	out, err := engine.Patch(*diffEngine, string(patch), options)
@@ -601,8 +602,8 @@ func commandMetadata() completion.Command {
 			{Name: "budget", Description: "Analysis time budget", Value: true},
 			{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
 			{Name: "config", Description: "YAML configuration file", Value: true},
-			{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
-			{Name: "engine-command", Description: "Command display executable", Value: true},
+			{Name: "engine", Description: "Patch display engine", Value: true, Values: engine.PatchNames},
+			{Name: "filter", Description: "Standard-input patch filter", Value: true},
 			{Name: "interval", Description: "Watch interval", Value: true},
 			{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
 			{Name: "no-calls", Description: "Skip call analysis"},
@@ -622,8 +623,8 @@ func commandMetadata() completion.Command {
 				Flags: []completion.Flag{
 					{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
 					{Name: "config", Description: "YAML configuration file", Value: true},
-					{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
-					{Name: "engine-command", Description: "Command display executable", Value: true},
+					{Name: "engine", Description: "File comparison engine", Value: true, Values: engine.FileNames},
+					{Name: "difftool", Description: "Git-compatible difftool executable", Value: true},
 					{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
 					{Name: "width", Description: "Render width", Value: true},
 				},
@@ -634,8 +635,8 @@ func commandMetadata() completion.Command {
 				Flags: []completion.Flag{
 					{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
 					{Name: "config", Description: "YAML configuration file", Value: true},
-					{Name: "engine", Description: "Diff display engine", Value: true, Values: engine.Names},
-					{Name: "engine-command", Description: "Command display executable", Value: true},
+					{Name: "engine", Description: "Patch display engine", Value: true, Values: engine.PatchNames},
+					{Name: "filter", Description: "Standard-input patch filter", Value: true},
 					{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
 					{Name: "width", Description: "Render width", Value: true},
 				},
@@ -651,11 +652,26 @@ func commandMetadata() completion.Command {
 				Name:        "provider",
 				Description: "Inspect and validate analysis providers",
 				Subcommands: []completion.Command{
-					{Name: "list", Description: "List configured analysis providers", Flags: []completion.Flag{{Name: "config", Description: "YAML configuration file", Value: true}, {Name: "json", Description: "Print JSON"}}},
-					{Name: "validate", Description: "Validate provider commands and JSON behavior", Flags: []completion.Flag{{Name: "config", Description: "YAML configuration file", Value: true}, {Name: "json", Description: "Print JSON"}}},
+					{
+						Name:        "list",
+						Description: "List configured analysis providers",
+						Flags:       providerCommandFlags(),
+					},
+					{
+						Name:        "validate",
+						Description: "Validate provider commands and JSON behavior",
+						Flags:       providerCommandFlags(),
+					},
 				},
 			},
 		},
+	}
+}
+
+func providerCommandFlags() []completion.Flag {
+	return []completion.Flag{
+		{Name: "config", Description: "YAML configuration file", Value: true},
+		{Name: "json", Description: "Print JSON"},
 	}
 }
 
@@ -816,6 +832,13 @@ func commandValue(configured []string, override string) []string {
 		return configured
 	}
 	return strings.Fields(override)
+}
+
+func fileEngine(difftool []string) string {
+	if len(difftool) > 0 {
+		return "difftool"
+	}
+	return "builtin"
 }
 
 func envInt(name string) int {

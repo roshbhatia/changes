@@ -1,3 +1,5 @@
 /result
 /dist
 /coverage.out
+!extras/ast-grep/
+!extras/ast-grep/**

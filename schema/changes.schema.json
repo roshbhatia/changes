@@ -3,7 +3,7 @@
   "$defs": {
     "Diff": {
       "properties": {
-        "command": {
+        "difftool": {
           "items": {
             "type": "string"
           },
@@ -12,10 +12,15 @@
         "engine": {
           "type": "string",
           "enum": [
-            "git",
-            "internal",
-            "command"
+            "builtin",
+            "filter"
           ]
+        },
+        "filter": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "layout": {
           "type": "string",

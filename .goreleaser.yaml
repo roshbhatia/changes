@@ -10,30 +10,10 @@ builds:
       - -s -w -X main.version={{ .Version }}
     goos: [darwin, linux]
     goarch: [amd64, arm64]
-  - id: changes-provider-ast-grep
-    main: ./extras/ast-grep
-    binary: changes-provider-ast-grep
-    env:
-      - CGO_ENABLED=0
-    goos: [darwin, linux]
-    goarch: [amd64, arm64]
-  - id: changes-provider-calldiff
-    main: ./extras/calldiff
-    binary: changes-provider-calldiff
-    env:
-      - CGO_ENABLED=0
-    goos: [darwin, linux]
-    goarch: [amd64, arm64]
-
 archives:
   - formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-    files:
-      - src: extras/ast-grep/provider.yaml
-        dst: share/changes/providers/ast-grep/provider.yaml
-      - src: extras/calldiff/provider.yaml
-        dst: share/changes/providers/calldiff/provider.yaml
 
 checksum:
   name_template: checksums.txt

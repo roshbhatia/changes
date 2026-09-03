@@ -8,9 +8,29 @@
 symbols and annotates them with changed call edges.
 
 The core depends only on Git. Optional analysis and display tools run through
-external command contracts. The `extras/` directory contains reference
-providers for ast-grep and calldiff. Provider responses are cached by manifest,
-action, and patch fingerprint under the user cache directory.
+external command contracts. The `extras/` directory owns every reference
+provider and its runtime dependencies. Provider responses are cached by the
+manifest, resolved provider and runtime executables, action, and patch
+fingerprint under the user cache directory.
+
+## Install it
+
+Install the provider-free core, then add only the providers you use:
+
+```bash
+nix profile install github:roshbhatia/changes#changes
+nix profile install github:roshbhatia/changes#provider-ast-grep
+nix profile install github:roshbhatia/changes#provider-calldiff
+```
+
+Install core and every reference provider as one self-contained package:
+
+```bash
+nix profile install github:roshbhatia/changes#full
+```
+
+`go install github.com/roshbhatia/changes@latest` installs the core only. Git
+must be on `PATH`. No Homebrew formula is published yet.
 
 ## Use it
 
@@ -42,56 +62,53 @@ such as `CHANGES_DIFF_LAYOUT=side-by-side`.
 # yaml-language-server: $schema=https://raw.githubusercontent.com/roshbhatia/changes/main/schema/changes.schema.json
 color: auto
 diff:
-  engine: command
+  engine: filter
   layout: unified
-  command: [delta, --paging=never]
+  filter: [delta, --paging=never]
+  difftool: [difft, --color, always, --display, side-by-side, $LOCAL, $REMOTE]
 providers:
   timeout: 20s
 ```
 
-The command display engine reads a patch from standard input. During
-`changes difftool`, `$LOCAL`, `$REMOTE`, and `$MERGED` arguments use Git's
-difftool convention. If no file placeholders exist, Changes appends the local
-and remote paths.
+The filter display engine sends one patch to the configured command's standard
+input. A filter must not contain Git file placeholders. During `changes
+difftool`, the separate `diff.difftool` command expands `$LOCAL`, `$REMOTE`, and
+`$MERGED`. If it has no local or remote placeholder, Changes appends both file
+paths.
 
-Changes loads user manifests from `~/.config/changes/providers`, then installed
-manifests from `XDG_DATA_DIRS/changes/providers/<name>/provider.yaml`. Flat
-manifest files remain valid in a user directory. A user manifest overrides an
-installed manifest with the same name. Set `providers.directory` or
-`CHANGES_PROVIDERS_DIRECTORY` to use one explicit user directory.
+For configuration migration, replace the old `git` engine with `builtin`.
+Replace `internal` with `builtin` and select its layout. Replace the old
+`command` engine with `filter`, and rename `diff.command` to `diff.filter`.
+Configure `diff.difftool` separately only when `changes difftool` should
+launch another file comparison command.
+
+Changes loads user manifests from `~/.config/changes/providers`, then
+`$XDG_DATA_HOME/changes/providers`, executable-adjacent package data, and each
+`XDG_DATA_DIRS/changes/providers` directory. Flat manifest files remain valid
+in a user directory. The first manifest with a given name wins. Set
+`providers.directory` or `CHANGES_PROVIDERS_DIRECTORY` to replace the first
+configuration directory.
 
 Each provider uses the shared `provider/v1` manifest. Actions add arguments and
 environment values through Go templates. Changes executes the resulting argv
 directly and never inserts a shell. The core only knows the semantic actions
 `changes.symbols` and `changes.calls`.
 
-```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/roshbhatia/changes/main/schema/provider.schema.json
-version: provider/v1
-name: ast-grep
-description: Map changed lines to source symbols with ast-grep
-command: [changes-provider-ast-grep]
-actions:
-  changes.symbols:
-    description: Map changed lines to their enclosing source symbols
-requires:
-  commands: [ast-grep]
-defaults:
-  timeout: 20s
-  priority: 100
-```
+See [`extras/README.md`](extras/README.md) for concrete manifests and package
+definitions. Each provider directory owns its executable adapter, manifest,
+runtime dependencies, and isolated validation.
 
 Inspect and test discovered providers without rendering the current repository:
 
 ```bash
 changes provider list
 changes provider validate
-changes provider validate ast-grep
+changes provider validate provider-name
 ```
 
-Validation checks each manifest and host dependency. It then creates a temporary
-Git repository, runs every advertised Changes action, and checks the returned
-symbol or call data.
+Validation checks each manifest and host dependency. It then creates a
+temporary repository, runs every advertised Changes action, and checks the
+returned symbol or call data.
 
 Generate the schema and command reference with `changes generate`. CI uses
 `changes generate --check` to reject stale output.
@@ -108,8 +125,8 @@ Render Git changes with symbol and call analysis
 | `--budget` `<value>` | Analysis time budget |
 | `--color` `<value>` | Color output |
 | `--config` `<value>` | YAML configuration file |
-| `--engine` `<value>` | Diff display engine |
-| `--engine-command` `<value>` | Command display executable |
+| `--engine` `<value>` | Patch display engine |
+| `--filter` `<value>` | Standard-input patch filter |
 | `--interval` `<value>` | Watch interval |
 | `--layout` `<value>` | Diff layout |
 | `--no-calls` | Skip call analysis |
@@ -130,8 +147,8 @@ Compare Git difftool LOCAL and REMOTE files
 | --- | --- |
 | `--color` `<value>` | Color output |
 | `--config` `<value>` | YAML configuration file |
-| `--engine` `<value>` | Diff display engine |
-| `--engine-command` `<value>` | Command display executable |
+| `--engine` `<value>` | File comparison engine |
+| `--difftool` `<value>` | Git-compatible difftool executable |
 | `--layout` `<value>` | Diff layout |
 | `--width` `<value>` | Render width |
 
@@ -143,8 +160,8 @@ Render a patch from standard input
 | --- | --- |
 | `--color` `<value>` | Color output |
 | `--config` `<value>` | YAML configuration file |
-| `--engine` `<value>` | Diff display engine |
-| `--engine-command` `<value>` | Command display executable |
+| `--engine` `<value>` | Patch display engine |
+| `--filter` `<value>` | Standard-input patch filter |
 | `--layout` `<value>` | Diff layout |
 | `--width` `<value>` | Render width |
 
@@ -186,7 +203,10 @@ Validate provider commands and JSON behavior
 nix develop
 go test -race ./...
 go run . generate --check
-cue vet schema/provider.cue extras/ast-grep/provider.yaml -d '#Provider'
+./hack/audit-provider-boundary.sh .
+for manifest in extras/*/provider.yaml; do
+  cue vet schema/provider.cue "$manifest" -d '#Provider'
+done
 nix flake check
 ./hack/screenshots.sh
 ```

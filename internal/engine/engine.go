@@ -10,33 +10,58 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/roshbhatia/changes/internal/source"
 	"github.com/roshbhatia/go-utils/diffview"
 	gitutil "github.com/roshbhatia/go-utils/git"
 )
 
-var Names = []string{"git", "internal", "command"}
+var (
+	PatchNames = []string{"builtin", "filter"}
+	FileNames  = []string{"builtin", "difftool"}
+)
 
 type Options struct {
-	Color   string
-	Command []string
-	Label   string
-	Layout  string
-	Width   int
+	Color    string
+	Difftool []string
+	Filter   []string
+	Label    string
+	Layout   string
+	Width    int
 }
 
-func Validate(name string, options Options) error {
+func validateName(name string, names []string, kind string) error {
 	found := false
-	for _, candidate := range Names {
+	for _, candidate := range names {
 		found = found || name == candidate
 	}
 	if !found {
-		return fmt.Errorf("unknown diff engine %q", name)
+		return fmt.Errorf("unknown %s engine %q", kind, name)
+	}
+	return nil
+}
+
+func ValidatePatch(name string, options Options) error {
+	if err := validateName(name, PatchNames, "patch"); err != nil {
+		return err
 	}
 	if options.Layout != "side-by-side" && options.Layout != "unified" {
 		return fmt.Errorf("layout must be side-by-side or unified")
 	}
-	if name == "command" && len(options.Command) == 0 {
-		return errors.New("command engine requires diff.command in config or -engine-command")
+	if name == "filter" && len(options.Filter) == 0 {
+		return errors.New("filter engine requires diff.filter in config or -filter")
+	}
+	return nil
+}
+
+func ValidateFiles(name string, options Options) error {
+	if err := validateName(name, FileNames, "file"); err != nil {
+		return err
+	}
+	if options.Layout != "side-by-side" && options.Layout != "unified" {
+		return fmt.Errorf("layout must be side-by-side or unified")
+	}
+	if name == "difftool" && len(options.Difftool) == 0 {
+		return errors.New("difftool engine requires diff.difftool in config or -difftool")
 	}
 	return nil
 }
@@ -44,40 +69,50 @@ func Validate(name string, options Options) error {
 func Patch(name string, patch string, options Options) (string, error) {
 	patch = labelPatch(patch, "", "", options.Label)
 	switch name {
-	case "git":
-		return patch, nil
-	case "internal":
+	case "builtin":
+		if options.Layout == "unified" {
+			return normalizeColor(patch, options.Color), nil
+		}
 		return diffview.Render(diffview.Options{
 			Files:   diffview.Parse(patch),
-			Unified: options.Layout == "unified",
+			Unified: false,
 			Width:   options.Width,
 		}), nil
-	case "command":
-		out, err := pipe(options.Command, patch)
+	case "filter":
+		if hasFilePlaceholder(options.Filter) {
+			return "", errors.New("patch filter must not contain $LOCAL, $REMOTE, or $MERGED; configure diff.difftool for file comparison")
+		}
+		out, err := pipe(options.Filter, patch)
 		return normalizeColor(out, options.Color), err
 	default:
 		return "", fmt.Errorf("%s needs repository context", name)
 	}
 }
 
+// Files compares two paths with the built-in fallback or configured difftool.
 func Files(name, local, remote string, options Options) (string, error) {
-	if name == "command" {
-		command := expand(options.Command, local, remote, options.Label)
-		if !hasFilePlaceholder(options.Command) {
-			command = append(command, local, remote)
-		}
-		out, err := output(command, true)
-		return normalizeColor(out, options.Color), err
+	if name == "difftool" {
+		return Difftool(local, remote, options)
 	}
-	patch, err := output([]string{"git", "diff", "--no-index", "--color=never", "--", local, remote}, true)
+	color := "never"
+	if options.Layout == "unified" {
+		color = options.Color
+	}
+	patch, err := source.FileDiff(local, remote, color)
 	if err != nil {
 		return "", err
 	}
-	if name == "git" {
-		out, err := output([]string{"git", "diff", "--no-index", "--color=" + options.Color, "--", local, remote}, true)
-		return labelPatch(out, local, remote, options.Label), err
+	patch = labelPatch(patch, local, remote, options.Label)
+	return Patch("builtin", patch, options)
+}
+
+func Difftool(local, remote string, options Options) (string, error) {
+	command := expand(options.Difftool, local, remote, options.Label)
+	if !hasFilePlaceholder(options.Difftool) {
+		command = append(command, local, remote)
 	}
-	return Patch(name, labelPatch(patch, local, remote, options.Label), options)
+	out, err := output(command, true)
+	return normalizeColor(out, options.Color), err
 }
 
 func labelPatch(patch, local, remote, label string) string {
@@ -91,7 +126,8 @@ func labelPatch(patch, local, remote, label string) string {
 	}
 	lines := strings.Split(patch, "\n")
 	for index, line := range lines {
-		if !strings.HasPrefix(line, "diff --git ") && !strings.HasPrefix(line, "--- ") && !strings.HasPrefix(line, "+++ ") {
+		plain := ansi.Strip(line)
+		if !strings.HasPrefix(plain, "diff --git ") && !strings.HasPrefix(plain, "--- ") && !strings.HasPrefix(plain, "+++ ") {
 			continue
 		}
 		for _, path := range paths {
@@ -155,7 +191,7 @@ func expand(command []string, local, remote, merged string) []string {
 
 func hasFilePlaceholder(command []string) bool {
 	for _, argument := range command {
-		if strings.Contains(argument, "$LOCAL") || strings.Contains(argument, "$REMOTE") {
+		if strings.Contains(argument, "$LOCAL") || strings.Contains(argument, "$REMOTE") || strings.Contains(argument, "$MERGED") {
 			return true
 		}
 	}

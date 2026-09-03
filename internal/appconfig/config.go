@@ -21,11 +21,12 @@ type Providers struct {
 	Timeout   providerlib.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
-// Diff selects the built-in renderer or a generic patch command.
+// Diff configures patch display and Git-compatible file comparison separately.
 type Diff struct {
-	Command []string `json:"command,omitempty" yaml:"command"`
-	Engine  string   `json:"engine,omitempty" yaml:"engine" jsonschema:"enum=git,enum=internal,enum=command"`
-	Layout  string   `json:"layout,omitempty" yaml:"layout" jsonschema:"enum=unified,enum=side-by-side"`
+	Difftool []string `json:"difftool,omitempty" yaml:"difftool"`
+	Engine   string   `json:"engine,omitempty" yaml:"engine" jsonschema:"enum=builtin,enum=filter"`
+	Filter   []string `json:"filter,omitempty" yaml:"filter"`
+	Layout   string   `json:"layout,omitempty" yaml:"layout" jsonschema:"enum=unified,enum=side-by-side"`
 }
 
 // Default returns the dependency-free Git configuration.
@@ -33,7 +34,7 @@ func Default() Config {
 	return Config{
 		Color: "auto",
 		Diff: Diff{
-			Engine: "git",
+			Engine: "builtin",
 			Layout: "unified",
 		},
 		Providers: Providers{Timeout: providerlib.Duration(20 * time.Second)},

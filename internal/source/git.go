@@ -2,7 +2,10 @@
 package source
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/roshbhatia/go-utils/git"
@@ -30,6 +33,24 @@ func (s Spec) Diff() (string, error) {
 // display engine and stays independent from the analysis patch above it.
 func (s Spec) DisplayDiff(color string) (string, error) {
 	return s.runDiff(color)
+}
+
+// FileDiff returns a unified patch for two paths without repository context.
+// The exit status for a detected difference is successful for this operation.
+func FileDiff(local, remote, color string) (string, error) {
+	arguments := []string{"diff", "--no-index", "--color=" + color, "--", local, remote}
+	command := exec.Command("git", arguments...)
+	command.Env = git.CleanEnv()
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return "", fmt.Errorf("compare files: %s: %w", strings.TrimSpace(stderr.String()), err)
+		}
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 func (s Spec) args(color string) []string {

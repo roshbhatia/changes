@@ -12,10 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
+	"github.com/roshbhatia/changes/internal/source"
 	"github.com/roshbhatia/go-utils/diffview"
 	providerlib "github.com/roshbhatia/go-utils/provider"
 )
@@ -175,8 +175,26 @@ func searchDirectories(explicit string) ([]string, error) {
 		directories = append(directories, filepath.Join(root, "changes", "providers"))
 	}
 
+	dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	if dataHome == "" || !filepath.IsAbs(dataHome) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("find provider data directory: %w", err)
+		}
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	directories = append(directories, filepath.Join(dataHome, "changes", "providers"))
+
+	if executable, err := os.Executable(); err == nil {
+		binaryDirectory := filepath.Dir(executable)
+		directories = append(directories,
+			filepath.Join(binaryDirectory, "providers"),
+			filepath.Join(binaryDirectory, "..", "share", "changes", "providers"),
+		)
+	}
+
 	dataDirectories := filepath.SplitList(os.Getenv("XDG_DATA_DIRS"))
-	if len(dataDirectories) == 0 && runtime.GOOS != "windows" {
+	if len(dataDirectories) == 0 {
 		dataDirectories = []string{"/usr/local/share", "/usr/share"}
 	}
 	for _, root := range dataDirectories {
@@ -211,7 +229,7 @@ func Run(ctx context.Context, manifest Manifest, action string, request Request)
 	if err != nil {
 		return Response{}, fmt.Errorf("encode request: %w", err)
 	}
-	cachePath, err := resultPath(manifest, action, payload)
+	cachePath, err := resultPath(manifest, action, payload, request.Directory)
 	if err == nil {
 		if cached, readErr := os.ReadFile(cachePath); readErr == nil {
 			response := Response{}
@@ -319,7 +337,16 @@ func environmentLookup(environment []string) func(string) (string, bool) {
 	}
 }
 
-func resultPath(manifest Manifest, action string, payload []byte) (string, error) {
+type executableIdentity struct {
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	Modified int64  `json:"modified"`
+}
+
+func resultPath(manifest Manifest, action string, payload []byte, workingDirectory string) (string, error) {
+	if len(manifest.Command) == 0 {
+		return "", errors.New("provider command is empty")
+	}
 	root := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME"))
 	if root == "" {
 		var err error
@@ -328,17 +355,50 @@ func resultPath(manifest Manifest, action string, payload []byte) (string, error
 			return "", err
 		}
 	}
+	commands := append([]string{manifest.Command[0]}, manifest.Requires.Commands...)
+	executables := make([]executableIdentity, 0, len(commands))
+	for _, command := range commands {
+		executable, err := identifyExecutable(command, workingDirectory)
+		if err != nil {
+			return "", err
+		}
+		executables = append(executables, executable)
+	}
 	identity := struct {
-		Manifest Manifest `json:"manifest"`
-		Action   string   `json:"action"`
-		Input    []byte   `json:"input"`
-	}{manifest, action, payload}
+		Manifest    Manifest             `json:"manifest"`
+		Executables []executableIdentity `json:"executables"`
+		Action      string               `json:"action"`
+		Input       []byte               `json:"input"`
+	}{manifest, executables, action, payload}
 	encoded, err := json.Marshal(identity)
 	if err != nil {
 		return "", err
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
 	return filepath.Join(root, "changes", "providers", digest+".json"), nil
+}
+
+func identifyExecutable(command, workingDirectory string) (executableIdentity, error) {
+	path := command
+	var err error
+	if strings.ContainsRune(command, filepath.Separator) {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workingDirectory, path)
+		}
+	} else {
+		path, err = exec.LookPath(command)
+		if err != nil {
+			return executableIdentity{}, err
+		}
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(path); resolveErr == nil {
+		path = resolved
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return executableIdentity{}, err
+	}
+	return executableIdentity{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano()}, nil
 }
 
 func writeResult(path string, data []byte) error {
@@ -369,14 +429,14 @@ func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 	if !report.OK() {
 		return validation
 	}
-	directory, err := validationRepository()
+	directory, err := source.ValidationFixture()
 	if err != nil {
 		validation.Checks = append(validation.Checks, failedCheck("fixture", manifest.Name, err))
 		return validation
 	}
 	defer func() { _ = os.RemoveAll(directory) }()
 	request := Request{
-		Directory: directory, Files: []string{"main.go"}, Fingerprint: "provider-validation",
+		Directory: directory, Files: []string{"main.ts"}, Fingerprint: "provider-validation",
 	}
 	probed := false
 	for _, action := range []string{ActionSymbols, ActionCalls} {
@@ -425,53 +485,18 @@ func mustJSON(request Request, action string) []byte {
 	return payload
 }
 
-func validationRepository() (string, error) {
-	directory, err := os.MkdirTemp("", "changes-provider-validation-")
-	if err != nil {
-		return "", err
-	}
-	cleanup := func(err error) (string, error) {
-		_ = os.RemoveAll(directory)
-		return "", err
-	}
-	initial := "package validation\n\nfunc Ready() bool { return false }\nfunc main() {}\n"
-	changed := "package validation\n\nfunc Ready() bool { return true }\nfunc main() { Ready() }\n"
-	path := filepath.Join(directory, "main.go")
-	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
-		return cleanup(err)
-	}
-	commands := [][]string{
-		{"init", "--quiet"},
-		{"config", "user.name", "Changes validation"},
-		{"config", "user.email", "changes@example.invalid"},
-		{"add", "main.go"},
-		{"commit", "--quiet", "-m", "validation fixture"},
-	}
-	for _, arguments := range commands {
-		command := exec.Command("git", arguments...)
-		command.Dir = directory
-		if output, err := command.CombinedOutput(); err != nil {
-			return cleanup(fmt.Errorf("git %s: %s: %w", strings.Join(arguments, " "), strings.TrimSpace(string(output)), err))
-		}
-	}
-	if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
-		return cleanup(err)
-	}
-	return directory, nil
-}
-
 func validateSemantics(action string, response Response) error {
 	switch action {
 	case ActionSymbols:
-		for _, symbol := range response.Symbols["main.go"] {
-			if strings.Contains(symbol.Name, "Ready") {
+		for _, symbol := range response.Symbols["main.ts"] {
+			if strings.Contains(symbol.Name, "ready") {
 				return nil
 			}
 		}
-		return errors.New("response did not identify Ready in main.go")
+		return errors.New("response did not identify ready in main.ts")
 	case ActionCalls:
-		if len(response.Edges["main.go"]) == 0 {
-			return errors.New("response did not identify the changed call in main.go")
+		if len(response.Edges["main.ts"]) == 0 {
+			return errors.New("response did not identify the changed call in main.ts")
 		}
 	}
 	return nil
