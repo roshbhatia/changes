@@ -46,9 +46,13 @@ func RenderList(providers []LoadedManifest) (string, error) {
 			actions = append(actions, action)
 		}
 		sort.Strings(actions)
+		description := loaded.Manifest.Description
+		if !loaded.Valid() {
+			description = "Invalid manifest: " + loaded.Problem
+		}
 		views = append(views, listView{
 			Name:        loaded.Manifest.Name,
-			Description: loaded.Manifest.Description,
+			Description: description,
 			Actions:     strings.Join(actions, ", "),
 			Command:     strings.Join(loaded.Manifest.Command, " "),
 			Path:        loaded.Path,

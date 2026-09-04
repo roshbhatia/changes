@@ -53,7 +53,10 @@ func FileDiff(local, remote, color string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func (s Spec) args(color string) []string {
+func (s Spec) args(color string) ([]string, error) {
+	if s.Staged && s.To != "" {
+		return nil, errors.New("staged comparisons accept at most one revision")
+	}
 	args := []string{"diff", "--color=" + color, "--find-renames"}
 	args = append(args, "--no-ext-diff")
 	if s.Staged {
@@ -69,11 +72,14 @@ func (s Spec) args(color string) []string {
 		args = append(args, "--")
 		args = append(args, s.Paths...)
 	}
-	return args
+	return args, nil
 }
 
 func (s Spec) runDiff(color string) (string, error) {
-	args := s.args(color)
+	args, err := s.args(color)
+	if err != nil {
+		return "", err
+	}
 	out, err := git.Output(s.Dir, args...)
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)

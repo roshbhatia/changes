@@ -29,8 +29,14 @@ Install core and every reference provider as one self-contained package:
 nix profile install github:roshbhatia/changes#full
 ```
 
-`go install github.com/roshbhatia/changes@latest` installs the core only. Git
-must be on `PATH`. No Homebrew formula is published yet.
+Install a release and its shell completions with Homebrew:
+
+```bash
+brew install --cask roshbhatia/tap/changes
+```
+
+`go install github.com/roshbhatia/changes/cmd/changes@latest` installs the core
+only. Git must be on `PATH`.
 
 ## Use it
 
@@ -84,8 +90,10 @@ launch another file comparison command.
 
 Changes loads user manifests from `~/.config/changes/providers`, then
 `$XDG_DATA_HOME/changes/providers`, executable-adjacent package data, and each
-`XDG_DATA_DIRS/changes/providers` directory. Flat manifest files remain valid
-in a user directory. The first manifest with a given name wins. Set
+`XDG_DATA_DIRS/changes/providers` directory. Flat YAML manifest files remain
+valid in a user directory. Packaged provider directories use a file named
+`provider.yaml`, `provider.yml`, or `provider.json`. The first manifest with a
+given name wins. Set
 `providers.directory` or `CHANGES_PROVIDERS_DIRECTORY` to replace the first
 configuration directory.
 
@@ -120,6 +128,15 @@ Generate the schema and command reference with `changes generate`. CI uses
 
 Render Git changes with symbol and call analysis
 
+Refs follow git diff: none is HEAD against the working tree, one is that ref
+against the working tree, and two compare the trees. A from of the form a..b is
+split into two refs.
+
+-r reads every repository under the workspace. The workspace is
+$SYSINIT_WORKSPACE when the working directory sits inside it, then the Git top
+level, then the working directory. Each repository's files hang under its own
+name.
+
 | Option | Description |
 | --- | --- |
 | `--budget` `<value>` | Analysis time budget |
@@ -138,6 +155,11 @@ Render Git changes with symbol and call analysis
 | `--stat`, `-s` | Show change summary |
 | `--watch`, `-w` | Watch for changes |
 | `--width` `<value>` | Render width |
+| `--version` | Print the Changes version |
+
+### `changes completion`
+
+Generate shell completions
 
 ### `changes difftool`
 
@@ -202,11 +224,12 @@ Validate provider commands and JSON behavior
 ```bash
 nix develop
 go test -race ./...
-go run . generate --check
+go run ./cmd/changes generate --check
 ./hack/audit-provider-boundary.sh .
 for manifest in extras/*/provider.yaml; do
   cue vet schema/provider.cue "$manifest" -d '#Provider'
 done
 nix flake check
 ./hack/screenshots.sh
+./hack/screenshots.sh --check
 ```

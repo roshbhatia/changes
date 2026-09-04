@@ -60,7 +60,8 @@ func outline(root string, paths []string) (map[string][]diffview.Symbol, error) 
 	if len(paths) == 0 {
 		return out, nil
 	}
-	command := exec.Command("ast-grep", append([]string{"outline", "--json=compact"}, paths...)...)
+	arguments := []string{"outline", "--json=compact", "--"}
+	command := exec.Command("ast-grep", append(arguments, paths...)...)
 	command.Dir = root
 	blob, err := command.CombinedOutput()
 	if err != nil {

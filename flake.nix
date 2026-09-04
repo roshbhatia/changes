@@ -57,7 +57,7 @@
               pname = name;
               inherit version;
               src = ./.;
-              vendorHash = "sha256-BoQxSWsOzt3a9Z02unXcJUpl6k6C/Lgc61qSvy+vCCE=";
+              vendorHash = "sha256-esvMy+HH2OGA0cHYqB6OFt5Uacen/1N4o4UtTAgE8TA=";
               subPackages = [ subPackage ];
               nativeBuildInputs = [ pkgs.makeWrapper ] ++ pkgs.lib.optional completions pkgs.installShellFiles;
               nativeCheckInputs = [ pkgs.git ];
@@ -65,7 +65,7 @@
               checkPhase = pkgs.lib.optionalString completions ''
                 runHook preCheck
                 go test -race ./...
-                go run . generate --check
+                go run ./cmd/changes generate --check
                 runHook postCheck
               '';
               ldflags = pkgs.lib.optionals completions [
@@ -104,7 +104,7 @@
             };
           changes = mkPackage {
             name = "changes";
-            subPackage = ".";
+            subPackage = "./cmd/changes";
             runtimeInputs = [ pkgs.git ];
             completions = true;
           };
@@ -143,16 +143,20 @@
           );
           extras = pkgs.symlinkJoin {
             name = "changes-providers-${version}";
-            paths = map (provider: provider.adapter) (builtins.attrValues providers);
+            paths = builtins.attrValues providers;
             passthru.providers = providers;
           };
           full = pkgs.symlinkJoin {
             name = "changes-full-${version}";
-            paths = [ changes ] ++ builtins.attrValues providers;
+            paths = [
+              changes
+              extras
+            ];
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postBuild = ''
               wrapProgram "$out/bin/changes" \
-                --prefix XDG_DATA_DIRS : "$out/share"
+                --prefix PATH : "${extras}/bin" \
+                --prefix XDG_DATA_DIRS : "${extras}/share"
             '';
             meta = changes.meta // {
               mainProgram = "changes";
@@ -215,11 +219,59 @@
           providerAggregateBoundary = pkgs.runCommand "changes-provider-aggregate-boundary" { } ''
             ${pkgs.lib.concatMapStringsSep "\n" (name: ''
               test -x ${packages.extras}/bin/changes-provider-${name}
-              test ! -e ${packages.extras}/bin/${name}
               test -f ${packages.extras}/share/changes/providers/${name}/provider.yaml
             '') providerNames}
             touch "$out"
           '';
+          providerAggregateValidation = pkgs.runCommand "changes-provider-aggregate-validation" { } ''
+            export HOME="$TMPDIR/home"
+            export XDG_CACHE_HOME="$TMPDIR/cache"
+            export XDG_CONFIG_HOME="$TMPDIR/config"
+            export XDG_DATA_HOME="$TMPDIR/data-home"
+            export XDG_DATA_DIRS="${packages.extras}/share"
+            export PATH="${packages.default}/bin:${packages.extras}/bin:${pkgs.coreutils}/bin"
+            unset CHANGES_CONFIG CHANGES_PROVIDERS_DIRECTORY
+            mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+            ${pkgs.lib.getExe packages.default} provider validate
+            touch "$out"
+          '';
+          dashPrefixedPaths =
+            pkgs.runCommand "changes-dash-prefixed-paths"
+              {
+                nativeBuildInputs = [
+                  packages.full
+                  pkgs.git
+                  pkgs.gnugrep
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home"
+                export XDG_CACHE_HOME="$TMPDIR/cache"
+                export XDG_CONFIG_HOME="$TMPDIR/config"
+                export XDG_DATA_HOME="$TMPDIR/data-home"
+                export XDG_DATA_DIRS="${packages.extras}/share"
+                unset CHANGES_CONFIG CHANGES_PROVIDERS_DIRECTORY
+                mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" repository
+                cd repository
+                git init --quiet
+                git config user.name "Changes test"
+                git config user.email changes@example.invalid
+                printf '%s\n' \
+                  'export function source(): number { return 1 }' \
+                  'export function target(): number { return source() }' \
+                  > ./-dash.ts
+                git add -- ./-dash.ts
+                git commit --quiet -m fixture
+                printf '%s\n' \
+                  'export function source(): number { return 2 }' \
+                  'export function target(): number { return source() }' \
+                  > ./-dash.ts
+                changes --color never -- ./-dash.ts > output 2> error
+                test ! -s error
+                grep -F -- 'diff --git a/-dash.ts b/-dash.ts' output
+                grep -F -- '-dash.ts' output
+                touch "$out"
+              '';
           coreRuntimePaths = map toString packages.default.runtimeInputs;
           providerExclusiveRuntimeInputs = builtins.filter (
             runtime: !(builtins.elem (toString runtime) coreRuntimePaths)
@@ -227,7 +279,9 @@
         in
         {
           default = packages.default;
+          dash-prefixed-paths = dashPrefixedPaths;
           provider-aggregate-boundary = providerAggregateBoundary;
+          provider-aggregate-validation = providerAggregateValidation;
           provider-boundary =
             pkgs.runCommand "changes-provider-boundary"
               {
@@ -284,7 +338,60 @@
                 export XDG_DATA_DIRS="$TMPDIR/data"
                 unset CHANGES_CONFIG CHANGES_PROVIDERS_DIRECTORY
                 mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_DATA_DIRS"
-                test "$(${pkgs.lib.getExe packages.full} provider list --json | jq 'length')" -eq ${toString (builtins.length providerNames)}
+                full="$(${pkgs.coreutils}/bin/env -i \
+                  HOME="$HOME" \
+                  XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+                  XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+                  XDG_DATA_HOME="$XDG_DATA_HOME" \
+                  XDG_DATA_DIRS="$XDG_DATA_DIRS" \
+                  PATH="${pkgs.coreutils}/bin" \
+                  ${pkgs.lib.getExe packages.full} provider list --json)"
+                test "$(printf '%s' "$full" | jq 'length')" -eq ${toString (builtins.length providerNames)}
+                ${pkgs.coreutils}/bin/env -i \
+                  HOME="$HOME" \
+                  XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+                  XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+                  XDG_DATA_HOME="$XDG_DATA_HOME" \
+                  XDG_DATA_DIRS="$XDG_DATA_DIRS" \
+                  PATH="${pkgs.coreutils}/bin" \
+                  ${pkgs.lib.getExe packages.full} provider validate
+                touch "$out"
+              '';
+          media-freshness =
+            pkgs.runCommand "changes-media-freshness"
+              {
+                nativeBuildInputs = [
+                  pkgs.coreutils
+                  pkgs.ffmpeg
+                  pkgs.findutils
+                ];
+              }
+              ''
+                ${pkgs.bash}/bin/bash ${./.}/hack/screenshots.sh --check
+                touch "$out"
+              '';
+          release-archive =
+            pkgs.runCommand "changes-release-archive"
+              {
+                nativeBuildInputs = [
+                  pkgs.diffutils
+                  pkgs.git
+                  pkgs.go
+                  pkgs.gnutar
+                  pkgs.goreleaser
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home"
+                export GOCACHE="$TMPDIR/go-cache"
+                export GOFLAGS=-mod=vendor
+                mkdir -p "$HOME" "$GOCACHE"
+                cp -R ${./.} source
+                chmod -R u+w source
+                cp -R ${packages.default.goModules} source/vendor
+                chmod -R u+w source/vendor
+                cd source
+                ${pkgs.bash}/bin/bash ./hack/check-release.sh
                 touch "$out"
               '';
         }
@@ -308,6 +415,7 @@
               pkgs.ripgrep
               pkgs.shfmt
               pkgs.git
+              pkgs.gnutar
               pkgs.fish
               pkgs.ffmpeg
               pkgs.charm-freeze

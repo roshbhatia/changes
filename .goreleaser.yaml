@@ -1,8 +1,13 @@
 version: 2
+project_name: changes
+
+before:
+  hooks:
+    - go run ./cmd/changes generate --check
 
 builds:
   - id: changes
-    main: .
+    main: ./cmd/changes
     binary: changes
     env:
       - CGO_ENABLED=0
@@ -11,12 +16,42 @@ builds:
     goos: [darwin, linux]
     goarch: [amd64, arm64]
 archives:
-  - formats: [tar.gz]
+  - id: changes
+    ids: [changes]
+    formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - src: completions/*
+        dst: completions
 
 checksum:
   name_template: checksums.txt
 
 changelog:
   use: github-native
+
+homebrew_casks:
+  - name: changes
+    ids: [changes]
+    binaries: [changes]
+    homepage: https://github.com/roshbhatia/changes
+    description: Review Git changes with symbol and call context
+    license: MIT
+    completions:
+      bash: completions/changes.bash
+      zsh: completions/changes.zsh
+      fish: completions/changes.fish
+    hooks:
+      post:
+        install: |
+          system_command "/bin/mkdir", args: ["-p", "#{HOMEBREW_PREFIX}/share/nushell/vendor/autoload"]
+          system_command "/bin/cp", args: ["#{staged_path}/completions/changes.nu", "#{HOMEBREW_PREFIX}/share/nushell/vendor/autoload/changes.nu"]
+        uninstall: |
+          system_command "/bin/rm", args: ["-f", "#{HOMEBREW_PREFIX}/share/nushell/vendor/autoload/changes.nu"]
+    repository:
+      owner: roshbhatia
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"

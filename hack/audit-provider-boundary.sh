@@ -27,7 +27,7 @@ if [[ -n $provider_terms ]]; then
     fi
   done < <(
     printf '%s\0' "$root/go.mod"
-    find "$root" -maxdepth 1 -type f -name '*.go' -print0
+    find "$root/cmd" -type f -name '*.go' -print0
     find "$root/internal" -type f \( \
       -name '*.go' -o -name '*.txt' -o -name '*.tmpl' -o \
       -name '*.yaml' -o -name '*.yml' -o -name '*.json' \
@@ -41,7 +41,7 @@ fi
 
 legacy_engine='(engine|Engine).{0,40}"(git|internal|command)"|case "(git|internal|command)"|enum=(git|internal|command)'
 if grep -RniE --include='*.go' "$legacy_engine" \
-  "$root/main.go" \
+  "$root/cmd" \
   "$root/internal/engine" \
   "$root/internal/appconfig"; then
   echo "core source exposes an implementation-specific diff engine" >&2

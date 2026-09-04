@@ -149,6 +149,43 @@ JSON
 	}
 }
 
+func TestValidateRendersProtocolFieldsLikeExecution(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `test "$1" = "changes.provider/v1"
+test "$2" = "changes.symbols"
+test "$VERSION" = "changes.provider/v1"
+test "$ACTION" = "changes.symbols"
+cat >/dev/null
+cat <<'JSON'
+{
+  "version": "changes.provider/v1",
+  "symbols": {
+    "main.ts": [
+      {
+        "kind": "function",
+        "name": "ready",
+        "from": 3,
+        "to": 3
+      }
+    ]
+  }
+}
+JSON
+`
+	configured := manifest("symbols", ActionSymbols, []string{shell, "-c", script, "provider"})
+	action := configured.Actions[ActionSymbols]
+	action.Argv = []string{"{{.Version}}", "{{.Action}}"}
+	action.Env = map[string]string{"VERSION": "{{.Version}}", "ACTION": "{{.Action}}"}
+	configured.Actions[ActionSymbols] = action
+	result := Validate(context.Background(), LoadedManifest{Manifest: configured, Path: "test.yaml"})
+	if !result.OK() {
+		t.Fatalf("validation = %+v", result)
+	}
+}
+
 func TestRunRejectsMissingRequiredEnvironment(t *testing.T) {
 	shell, err := exec.LookPath("sh")
 	if err != nil {
@@ -281,7 +318,7 @@ func TestValidateRejectsProviderWithoutChangesAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configured := manifest("foreign", "traces.query", []string{shell, "-c", "exit 0"})
+	configured := manifest("foreign", "unrelated.query", []string{shell, "-c", "exit 0"})
 	result := Validate(context.Background(), LoadedManifest{Manifest: configured, Path: "test.yaml"})
 	if result.OK() || !strings.Contains(result.Checks[len(result.Checks)-1].Message, ActionSymbols) {
 		t.Fatalf("validation = %+v", result)
@@ -304,15 +341,109 @@ func TestDiscoverUsesUserManifestBeforeInstalledProvider(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(userDirectory, "symbols.yaml"), []byte(providerYAML(t, "user")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(installedDirectory, "symbols.yaml"), []byte(providerYAML(t, "installed")), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(installedDirectory, "provider.yaml"), []byte(providerYAML(t, "installed")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Discover("")
+	discovery, err := Discover("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 1 || loaded[0].Manifest.Description != "user" {
-		t.Fatalf("providers = %+v", loaded)
+	if len(discovery.Providers) != 1 || discovery.Providers[0].Manifest.Description != "user" {
+		t.Fatalf("discovery = %+v", discovery)
+	}
+}
+
+func TestDiscoverMalformedOverrideDoesNotReserveProviderName(t *testing.T) {
+	configHome := t.TempDir()
+	dataHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_DATA_DIRS", dataHome)
+	userDirectory := filepath.Join(configHome, "changes", "providers")
+	installedDirectory := filepath.Join(dataHome, "changes", "providers", "symbols")
+	for _, directory := range []string{userDirectory, installedDirectory} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(userDirectory, "symbols.yaml"), []byte("version: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installedDirectory, "provider.yaml"), []byte(providerYAML(t, "installed")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, err := Discover("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Providers) != 1 || discovery.Providers[0].Manifest.Description != "installed" {
+		t.Fatalf("providers = %+v", discovery.Providers)
+	}
+	if len(discovery.Diagnostics) != 1 || discovery.Diagnostics[0].Manifest.Name != "symbols" {
+		t.Fatalf("diagnostics = %+v", discovery.Diagnostics)
+	}
+}
+
+func TestDiscoverContinuesPastMalformedOptionalManifest(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "broken.yaml"), []byte("version: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "symbols.yaml"), []byte(providerYAML(t, "valid")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, err := Discover(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Providers) != 1 || len(discovery.Diagnostics) != 1 {
+		t.Fatalf("discovery = %+v", discovery)
+	}
+	byName := map[string]LoadedManifest{}
+	for _, candidate := range discovery.All() {
+		byName[candidate.Manifest.Name] = candidate
+	}
+	if !byName["symbols"].Valid() {
+		t.Fatalf("valid provider was disabled: %+v", byName["symbols"])
+	}
+	if byName["broken"].Valid() || byName["broken"].Problem == "" {
+		t.Fatalf("malformed provider has no diagnostic: %+v", byName["broken"])
+	}
+	validation := Validate(context.Background(), byName["broken"])
+	if validation.OK() || validation.Checks[0].Kind != "manifest" {
+		t.Fatalf("validation = %+v", validation)
+	}
+}
+
+func TestDiscoverIgnoresNonManifestJSONFiles(t *testing.T) {
+	directory := t.TempDir()
+	nested := filepath.Join(directory, "symbols")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "provider.yaml"), []byte(providerYAML(t, "valid")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(directory, "package.json"),
+		filepath.Join(nested, "package.json"),
+	} {
+		if err := os.WriteFile(path, []byte(`{"name":"adapter","private":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	discovery, err := Discover(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Providers) != 1 || discovery.Providers[0].Manifest.Name != "symbols" {
+		t.Fatalf("providers = %+v", discovery.Providers)
+	}
+	if len(discovery.Diagnostics) != 0 {
+		t.Fatalf("package metadata was treated as a manifest: %+v", discovery.Diagnostics)
 	}
 }
 
@@ -337,12 +468,51 @@ actions:
 	if err := os.WriteFile(filepath.Join(explicit, "provider.yaml"), []byte(manifestYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Discover(explicit)
+	discovery, err := Discover(explicit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 1 || loaded[0].Manifest.Name != "explicit" {
-		t.Fatalf("providers = %+v", loaded)
+	if len(discovery.Providers) != 1 || discovery.Providers[0].Manifest.Name != "explicit" {
+		t.Fatalf("discovery = %+v", discovery)
+	}
+}
+
+func TestDiscoverFollowsProviderDirectorySymlinks(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "provider.yaml"), []byte(providerYAML(t, "linked")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "symbols")); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Providers) != 1 || discovery.Providers[0].Manifest.Description != "linked" {
+		t.Fatalf("discovery = %+v", discovery)
+	}
+}
+
+func TestDiscoverReportsBrokenProviderDirectorySymlink(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "missing-provider")
+	if err := os.Symlink(filepath.Join(root, "missing-target"), path); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Diagnostics) != 1 || discovery.Diagnostics[0].Valid() {
+		t.Fatalf("discovery = %+v", discovery)
+	}
+	diagnostic := discovery.Diagnostics[0]
+	if diagnostic.Manifest.Name != "missing-provider" || !strings.Contains(diagnostic.Problem, "inspect provider path") {
+		t.Fatalf("diagnostic = %+v", diagnostic)
 	}
 }
 
@@ -368,12 +538,12 @@ func TestDiscoverUsesXDGDataHomeBeforeInstalledProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loaded, err := Discover("")
+	discovery, err := Discover("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 1 || loaded[0].Manifest.Description != "user data" {
-		t.Fatalf("providers = %+v", loaded)
+	if len(discovery.Providers) != 1 || discovery.Providers[0].Manifest.Description != "user data" {
+		t.Fatalf("discovery = %+v", discovery)
 	}
 }
 

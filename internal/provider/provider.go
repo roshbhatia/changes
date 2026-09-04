@@ -33,6 +33,23 @@ type Manifest = providerlib.Manifest
 type LoadedManifest struct {
 	Manifest Manifest `json:"manifest"`
 	Path     string   `json:"path"`
+	Problem  string   `json:"problem,omitempty"`
+}
+
+// Valid reports whether discovery decoded and validated the manifest.
+func (loaded LoadedManifest) Valid() bool { return loaded.Problem == "" }
+
+// Discovery keeps runnable providers separate from manifest diagnostics.
+type Discovery struct {
+	Providers   []LoadedManifest
+	Diagnostics []LoadedManifest
+}
+
+// All returns runnable providers followed by diagnostics for inspection.
+func (discovery Discovery) All() []LoadedManifest {
+	all := make([]LoadedManifest, 0, len(discovery.Providers)+len(discovery.Diagnostics))
+	all = append(all, discovery.Providers...)
+	return append(all, discovery.Diagnostics...)
 }
 
 // Schema returns the shared provider/v1 manifest schema.
@@ -83,80 +100,147 @@ func Supports(manifest Manifest, action string) bool {
 	return ok
 }
 
-// Discover loads the user provider directory followed by installed manifests.
-// The first manifest with a given name wins, so user manifests override packages.
-func Discover(directory string) ([]LoadedManifest, error) {
+// Discover loads providers by precedence; invalid manifests do not reserve names.
+func Discover(directory string) (Discovery, error) {
 	directories, err := searchDirectories(directory)
 	if err != nil {
-		return nil, err
+		return Discovery{}, err
 	}
 	seen := map[string]bool{}
-	var manifests []LoadedManifest
+	var discovery Discovery
 	for _, one := range directories {
 		loaded, err := discoverDirectory(one)
 		if err != nil {
-			return nil, err
+			return Discovery{}, err
 		}
 		for _, candidate := range loaded {
+			if !candidate.Valid() {
+				discovery.Diagnostics = append(discovery.Diagnostics, candidate)
+				continue
+			}
 			if seen[candidate.Manifest.Name] {
 				continue
 			}
 			seen[candidate.Manifest.Name] = true
-			manifests = append(manifests, LoadedManifest{
-				Manifest: candidate.Manifest,
-				Path:     candidate.Path,
-			})
+			discovery.Providers = append(discovery.Providers, candidate)
 		}
 	}
-	sort.SliceStable(manifests, func(left, right int) bool {
-		leftPriority := manifests[left].Manifest.Defaults.Priority
-		rightPriority := manifests[right].Manifest.Defaults.Priority
+	sort.SliceStable(discovery.Providers, func(left, right int) bool {
+		leftPriority := discovery.Providers[left].Manifest.Defaults.Priority
+		rightPriority := discovery.Providers[right].Manifest.Defaults.Priority
 		if leftPriority == rightPriority {
-			return manifests[left].Manifest.Name < manifests[right].Manifest.Name
+			return discovery.Providers[left].Manifest.Name < discovery.Providers[right].Manifest.Name
 		}
 		return leftPriority > rightPriority
 	})
-	return manifests, nil
+	sort.SliceStable(discovery.Diagnostics, func(left, right int) bool {
+		if discovery.Diagnostics[left].Manifest.Name == discovery.Diagnostics[right].Manifest.Name {
+			return discovery.Diagnostics[left].Path < discovery.Diagnostics[right].Path
+		}
+		return discovery.Diagnostics[left].Manifest.Name < discovery.Diagnostics[right].Manifest.Name
+	})
+	return discovery, nil
 }
 
-func discoverDirectory(root string) ([]providerlib.LoadedManifest, error) {
-	loaded, err := providerlib.Discover(root)
-	if err != nil {
-		return nil, err
-	}
+func discoverDirectory(root string) ([]LoadedManifest, error) {
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
-		return loaded, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read provider directory %s: %w", root, err)
+		return []LoadedManifest{invalidManifest(root, filepath.Dir(root), fmt.Errorf("read provider directory %s: %w", root, err))}, nil
 	}
-	seen := make(map[string]string, len(loaded))
-	for _, candidate := range loaded {
-		seen[candidate.Manifest.Name] = candidate.Path
-	}
+	var paths []string
+	var invalid []LoadedManifest
 	for _, entry := range entries {
 		path := filepath.Join(root, entry.Name())
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			return nil, fmt.Errorf("inspect provider path %s: %w", path, statErr)
+		isDirectory := entry.IsDir()
+		if entry.Type()&os.ModeSymlink != 0 {
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				invalid = append(invalid, invalidManifest(path, root, fmt.Errorf("inspect provider path %s: %w", path, statErr)))
+				continue
+			}
+			isDirectory = info.IsDir()
 		}
-		if !info.IsDir() {
+		if !isDirectory {
+			if isFlatManifest(path) {
+				paths = append(paths, path)
+			}
 			continue
 		}
-		nested, discoverErr := providerlib.Discover(path)
-		if discoverErr != nil {
-			return nil, discoverErr
+		nested, readErr := os.ReadDir(path)
+		if readErr != nil {
+			invalid = append(invalid, invalidManifest(path, root, fmt.Errorf("read provider directory %s: %w", path, readErr)))
+			continue
 		}
 		for _, candidate := range nested {
-			if previous, exists := seen[candidate.Manifest.Name]; exists {
-				return nil, fmt.Errorf("duplicate provider %q in %s and %s", candidate.Manifest.Name, previous, candidate.Path)
+			candidatePath := filepath.Join(path, candidate.Name())
+			if !candidate.IsDir() && isProviderManifest(candidate.Name()) {
+				paths = append(paths, candidatePath)
 			}
-			seen[candidate.Manifest.Name] = candidate.Path
-			loaded = append(loaded, candidate)
 		}
 	}
+	sort.Strings(paths)
+	loaded := make([]LoadedManifest, 0, len(paths)+len(invalid))
+	loaded = append(loaded, invalid...)
+	for _, path := range paths {
+		candidate := loadManifest(path, root)
+		loaded = append(loaded, candidate)
+	}
 	return loaded, nil
+}
+
+func invalidManifest(path, root string, err error) LoadedManifest {
+	return LoadedManifest{
+		Manifest: Manifest{Name: inferredName(path, root)},
+		Path:     path,
+		Problem:  err.Error(),
+	}
+}
+
+func isFlatManifest(path string) bool {
+	switch filepath.Ext(path) {
+	case ".yaml", ".yml":
+		return true
+	default:
+		return isProviderManifest(filepath.Base(path))
+	}
+}
+
+func isProviderManifest(name string) bool {
+	switch name {
+	case "provider.json", "provider.yaml", "provider.yml":
+		return true
+	default:
+		return false
+	}
+}
+
+func loadManifest(path, root string) LoadedManifest {
+	loaded := invalidManifest(path, root, errors.New("manifest was not read"))
+	data, err := os.ReadFile(path)
+	if err == nil {
+		manifest, decodeErr := providerlib.Decode(bytes.NewReader(data), filepath.Ext(path))
+		if decodeErr == nil {
+			loaded.Manifest = manifest
+		}
+		err = decodeErr
+	}
+	if err != nil {
+		loaded.Problem = err.Error()
+	} else {
+		loaded.Problem = ""
+	}
+	return loaded
+}
+
+func inferredName(path, root string) string {
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if name == "provider" && filepath.Dir(path) != root {
+		return filepath.Base(filepath.Dir(path))
+	}
+	return name
 }
 
 func searchDirectories(explicit string) ([]string, error) {
@@ -223,9 +307,7 @@ func Run(ctx context.Context, manifest Manifest, action string, request Request)
 	if !Supports(manifest, action) {
 		return Response{}, fmt.Errorf("provider %s does not implement %s", manifest.Name, action)
 	}
-	request.Version = ProtocolVersion
-	request.Action = action
-	payload, err := json.Marshal(request)
+	request, payload, err := prepareRequest(request, action)
 	if err != nil {
 		return Response{}, fmt.Errorf("encode request: %w", err)
 	}
@@ -247,6 +329,16 @@ func Run(ctx context.Context, manifest Manifest, action string, request Request)
 		_ = writeResult(cachePath, encoded)
 	}
 	return response, nil
+}
+
+func prepareRequest(request Request, action string) (Request, []byte, error) {
+	request.Version = ProtocolVersion
+	request.Action = action
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return Request{}, nil, err
+	}
+	return request, payload, nil
 }
 
 func execute(ctx context.Context, manifest Manifest, action string, request Request, payload []byte) (Response, error) {
@@ -424,6 +516,13 @@ func writeResult(path string, data []byte) error {
 // Validate checks the shared manifest and probes every Changes action.
 func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 	manifest := loaded.Manifest
+	if !loaded.Valid() {
+		return Validation{
+			Manifest: manifest,
+			Path:     loaded.Path,
+			Checks:   []providerlib.Check{failedCheck("manifest", loaded.Path, errors.New(loaded.Problem))},
+		}
+	}
 	report := providerlib.Validator{LookupEnv: validationEnvironmentLookup(manifest)}.Validate(manifest, "")
 	validation := Validation{Manifest: manifest, Path: loaded.Path, Checks: report.Checks}
 	if !report.OK() {
@@ -444,9 +543,13 @@ func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 			continue
 		}
 		probed = true
-		response, err := execute(ctx, manifest, action, request, mustJSON(request, action))
+		prepared, payload, err := prepareRequest(request, action)
 		if err == nil {
-			err = validateSemantics(action, response)
+			var response Response
+			response, err = execute(ctx, manifest, action, prepared, payload)
+			if err == nil {
+				err = validateSemantics(action, response)
+			}
 		}
 		check := providerlib.Check{Kind: "action", Target: action, Status: providerlib.CheckOK}
 		if err != nil {
@@ -476,13 +579,6 @@ func validationEnvironmentLookup(manifest Manifest) func(string) (string, bool) 
 		}
 		return "", false
 	}
-}
-
-func mustJSON(request Request, action string) []byte {
-	request.Version = ProtocolVersion
-	request.Action = action
-	payload, _ := json.Marshal(request)
-	return payload
 }
 
 func validateSemantics(action string, response Response) error {
