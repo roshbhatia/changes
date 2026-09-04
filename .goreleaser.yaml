@@ -11,6 +11,8 @@ builds:
   - id: changes
     main: ./cmd/changes
     binary: changes
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w -X main.version={{ .Version }}
     goos: [darwin, linux]
@@ -26,32 +28,13 @@ archives:
       - README.md
       - src: completions/*
         dst: completions
+      - src: schema/*.cue
+        dst: schema
+      - src: schema/*.json
+        dst: schema
 
 checksum:
   name_template: checksums.txt
 
 changelog:
   use: github-native
-
-homebrew_casks:
-  - name: changes
-    ids: [changes]
-    binaries: [changes]
-    homepage: https://github.com/roshbhatia/changes
-    description: Review Git changes with symbol and call context
-    license: MIT
-    completions:
-      bash: completions/changes.bash
-      zsh: completions/changes.zsh
-      fish: completions/changes.fish
-    hooks:
-      post:
-        install: |
-          system_command "/bin/mkdir", args: ["-p", "#{HOMEBREW_PREFIX}/share/nushell/vendor/autoload"]
-          system_command "/bin/cp", args: ["#{staged_path}/completions/changes.nu", "#{HOMEBREW_PREFIX}/share/nushell/vendor/autoload/changes.nu"]
-        uninstall: |
-          system_command "/bin/rm", args: ["-f", "#{HOMEBREW_PREFIX}/share/nushell/vendor/autoload/changes.nu"]
-    repository:
-      owner: roshbhatia
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
