@@ -35,6 +35,9 @@ completions/changes.bash
 completions/changes.fish
 completions/changes.nu
 completions/changes.zsh
+schema/changes.schema.json
+schema/provider.cue
+schema/provider.schema.json
 EOF
 
 archives=("$source_dir"/dist/*.tar.gz)

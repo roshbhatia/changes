@@ -11,7 +11,7 @@ media_fingerprint() {
     printf '%s\n' flake.lock flake.nix go.mod go.sum hack/changes.tape hack/screenshots.sh
     find cmd internal extras -type f \
       \( -name '*.go' -o -name 'package.nix' -o -name 'provider.yaml' -o -name 'package.json' -o -name 'package-lock.json' \) \
-      ! -name '*_test.go' -print | sort
+      ! -name '*_test.go' -print | LC_ALL=C sort
   } | while IFS= read -r path; do
     sha256sum "$path"
   done | sha256sum | cut -d ' ' -f 1
