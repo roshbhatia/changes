@@ -1,5 +1,7 @@
 version: 2
 project_name: changes
+env:
+  - CGO_ENABLED=0
 
 before:
   hooks:
@@ -9,8 +11,6 @@ builds:
   - id: changes
     main: ./cmd/changes
     binary: changes
-    env:
-      - CGO_ENABLED=0
     ldflags:
       - -s -w -X main.version={{ .Version }}
     goos: [darwin, linux]
