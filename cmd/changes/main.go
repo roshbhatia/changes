@@ -122,10 +122,7 @@ func main() {
 	for _, diagnostic := range discovery.Diagnostics {
 		fmt.Fprintf(os.Stderr, "changes: skipped provider %s: %s\n", diagnostic.Manifest.Name, diagnostic.Problem)
 	}
-	providers := make([]provider.Manifest, 0, len(discovery.Providers))
-	for _, loaded := range discovery.Providers {
-		providers = append(providers, loaded.Manifest)
-	}
+	providers := discovery.Providers
 
 	dir, err := os.Getwd()
 	if err != nil {
@@ -202,6 +199,9 @@ func main() {
 		engine:        *diffEngine,
 		engineOptions: engineOptions,
 		providers:     providers,
+		providerCache: provider.CachePolicy{
+			TTL: time.Duration(configured.Providers.CacheTTL), MaxEntries: configured.Providers.CacheMaxEntries,
+		},
 	}
 
 	if !*watch {
@@ -307,7 +307,8 @@ type renderer struct {
 	color         string
 	engine        string
 	engineOptions engine.Options
-	providers     []provider.Manifest
+	providers     []provider.LoadedManifest
+	providerCache provider.CachePolicy
 }
 
 func (r renderer) render() (string, error) {
@@ -604,9 +605,9 @@ func (r renderer) layers(spec source.Spec, touched []string, patch string) (map[
 		To:          spec.To,
 	}
 	for _, configured := range r.providers {
-		if r.syms && provider.Supports(configured, provider.ActionSymbols) {
+		if r.syms && provider.Supports(configured.Manifest, provider.ActionSymbols) {
 			ctx, cancel := context.WithTimeout(context.Background(), r.budget)
-			response, err := provider.Run(ctx, configured, provider.ActionSymbols, request)
+			response, err := provider.Run(ctx, configured, provider.ActionSymbols, request, r.providerCache)
 			cancel()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "changes: %v\n", err)
@@ -614,9 +615,9 @@ func (r renderer) layers(spec source.Spec, touched []string, patch string) (map[
 				mergeSymbols(syms, response.Symbols)
 			}
 		}
-		if r.calls && provider.Supports(configured, provider.ActionCalls) {
+		if r.calls && provider.Supports(configured.Manifest, provider.ActionCalls) {
 			ctx, cancel := context.WithTimeout(context.Background(), r.budget)
-			response, err := provider.Run(ctx, configured, provider.ActionCalls, request)
+			response, err := provider.Run(ctx, configured, provider.ActionCalls, request, r.providerCache)
 			cancel()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "changes: %v\n", err)

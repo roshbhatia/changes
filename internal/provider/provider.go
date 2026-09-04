@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/roshbhatia/changes/internal/source"
 	"github.com/roshbhatia/go-utils/diffview"
@@ -24,6 +25,8 @@ const (
 	ProtocolVersion = "changes.provider/v1"
 	ActionCalls     = "changes.calls"
 	ActionSymbols   = "changes.symbols"
+
+	maxProviderCacheEntryBytes = 4 << 20
 )
 
 // Manifest is the shared provider/v1 manifest.
@@ -79,6 +82,12 @@ type Validation struct {
 	Manifest Manifest            `json:"manifest"`
 	Path     string              `json:"path,omitempty"`
 	Checks   []providerlib.Check `json:"checks"`
+}
+
+// CachePolicy bounds persistent provider results and their lifetime.
+type CachePolicy struct {
+	TTL        time.Duration
+	MaxEntries int
 }
 
 // OK reports whether all validation checks passed.
@@ -303,7 +312,14 @@ func uniquePaths(paths []string) []string {
 }
 
 // Run renders an action plan, sends one request on stdin, and decodes one response.
-func Run(ctx context.Context, manifest Manifest, action string, request Request) (Response, error) {
+func Run(
+	ctx context.Context,
+	loaded LoadedManifest,
+	action string,
+	request Request,
+	cache CachePolicy,
+) (Response, error) {
+	manifest := loaded.Manifest
 	if !Supports(manifest, action) {
 		return Response{}, fmt.Errorf("provider %s does not implement %s", manifest.Name, action)
 	}
@@ -311,22 +327,23 @@ func Run(ctx context.Context, manifest Manifest, action string, request Request)
 	if err != nil {
 		return Response{}, fmt.Errorf("encode request: %w", err)
 	}
-	cachePath, err := resultPath(manifest, action, payload, request.Directory)
-	if err == nil {
-		if cached, readErr := os.ReadFile(cachePath); readErr == nil {
-			response := Response{}
-			if decodeResponse(bytes.NewReader(cached), &response) == nil {
-				return response, nil
-			}
-		}
-	}
-	response, err := execute(ctx, manifest, action, request, payload)
+	prepared, err := prepareExecution(loaded, action, request)
 	if err != nil {
 		return Response{}, err
 	}
-	if cachePath != "" {
-		encoded, _ := json.Marshal(response)
-		_ = writeResult(cachePath, encoded)
+	cachePath, cacheErr := resultPath(prepared, action, payload)
+	if cacheErr == nil && cache.TTL > 0 && cache.MaxEntries > 0 {
+		pruneResults(filepath.Dir(cachePath), cache.TTL, cache.MaxEntries)
+		if response, ok := readResult(cachePath, cache.TTL); ok {
+			return response, nil
+		}
+	}
+	response, err := execute(ctx, prepared, payload)
+	if err != nil {
+		return Response{}, err
+	}
+	if cacheErr == nil && cache.TTL > 0 && cache.MaxEntries > 0 {
+		_ = writeResult(cachePath, response, cache.TTL, cache.MaxEntries)
 	}
 	return response, nil
 }
@@ -341,24 +358,67 @@ func prepareRequest(request Request, action string) (Request, []byte, error) {
 	return request, payload, nil
 }
 
-func execute(ctx context.Context, manifest Manifest, action string, request Request, payload []byte) (Response, error) {
+type preparedExecution struct {
+	manifest          Manifest
+	manifestDirectory string
+	workingDirectory  string
+	providerFiles     []string
+	plan              providerlib.Plan
+	environment       []string
+}
+
+func prepareExecution(loaded LoadedManifest, action string, request Request) (preparedExecution, error) {
+	manifestDirectory, err := providerManifestDirectory(loaded.Path, request.Directory)
+	if err != nil {
+		return preparedExecution{}, fmt.Errorf("resolve provider %s manifest directory: %w", loaded.Manifest.Name, err)
+	}
+	manifest, providerFiles, err := resolveManifestCommand(loaded.Manifest, manifestDirectory)
+	if err != nil {
+		return preparedExecution{}, fmt.Errorf("resolve provider %s: %w", loaded.Manifest.Name, err)
+	}
 	plan, err := manifest.Render(action, request)
 	if err != nil {
-		return Response{}, fmt.Errorf("render provider %s: %w", manifest.Name, err)
+		return preparedExecution{}, fmt.Errorf("render provider %s: %w", manifest.Name, err)
+	}
+	for index := len(manifest.Command); index < len(plan.Argv); index++ {
+		if isExplicitRelativePath(plan.Argv[index]) {
+			plan.Argv[index] = filepath.Clean(filepath.Join(manifestDirectory, plan.Argv[index]))
+			providerFiles = append(providerFiles, plan.Argv[index])
+		}
 	}
 	effectiveEnvironment := append(os.Environ(), sortedEnvironment(plan.Env)...)
 	report := providerlib.Validator{LookupEnv: environmentLookup(effectiveEnvironment)}.Validate(manifest, request.Directory)
 	if !report.OK() {
-		return Response{}, fmt.Errorf("provider %s is invalid: %w", manifest.Name, report.Error())
+		return preparedExecution{}, fmt.Errorf("provider %s is invalid: %w", manifest.Name, report.Error())
 	}
+	return preparedExecution{
+		manifest: manifest, manifestDirectory: manifestDirectory, workingDirectory: request.Directory,
+		providerFiles: uniquePaths(providerFiles), plan: plan, environment: effectiveEnvironment,
+	}, nil
+}
+
+func providerManifestDirectory(path, fallback string) (string, error) {
+	directory := fallback
+	if path != "" {
+		directory = filepath.Dir(path)
+	}
+	if directory == "" {
+		directory = "."
+	}
+	return filepath.Abs(directory)
+}
+
+func execute(ctx context.Context, prepared preparedExecution, payload []byte) (Response, error) {
+	manifest := prepared.manifest
+	plan := prepared.plan
 	if plan.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, plan.Timeout)
 		defer cancel()
 	}
 	command := exec.CommandContext(ctx, plan.Argv[0], plan.Argv[1:]...)
-	command.Dir = request.Directory
-	command.Env = effectiveEnvironment
+	command.Dir = prepared.workingDirectory
+	command.Env = prepared.environment
 	command.Stdin = bytes.NewReader(payload)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -433,9 +493,11 @@ type executableIdentity struct {
 	Path     string `json:"path"`
 	Size     int64  `json:"size"`
 	Modified int64  `json:"modified"`
+	Digest   string `json:"digest,omitempty"`
 }
 
-func resultPath(manifest Manifest, action string, payload []byte, workingDirectory string) (string, error) {
+func resultPath(prepared preparedExecution, action string, payload []byte) (string, error) {
+	manifest := prepared.manifest
 	if len(manifest.Command) == 0 {
 		return "", errors.New("provider command is empty")
 	}
@@ -447,27 +509,50 @@ func resultPath(manifest Manifest, action string, payload []byte, workingDirecto
 			return "", err
 		}
 	}
-	commands := append([]string{manifest.Command[0]}, manifest.Requires.Commands...)
+	commands := append([]string{prepared.plan.Argv[0]}, manifest.Requires.Commands...)
 	executables := make([]executableIdentity, 0, len(commands))
 	for _, command := range commands {
-		executable, err := identifyExecutable(command, workingDirectory)
+		executable, err := identifyExecutable(command, prepared.manifestDirectory)
 		if err != nil {
 			return "", err
 		}
 		executables = append(executables, executable)
 	}
+	arguments := make([]executableIdentity, 0, len(prepared.providerFiles))
+	for _, argument := range prepared.providerFiles {
+		identity, err := identifyFile(argument, true)
+		if err == nil {
+			arguments = append(arguments, identity)
+		}
+	}
 	identity := struct {
 		Manifest    Manifest             `json:"manifest"`
 		Executables []executableIdentity `json:"executables"`
+		Arguments   []executableIdentity `json:"arguments,omitempty"`
+		Environment map[string]string    `json:"environment,omitempty"`
 		Action      string               `json:"action"`
 		Input       []byte               `json:"input"`
-	}{manifest, executables, action, payload}
+	}{manifest, executables, arguments, cacheEnvironment(prepared), action, payload}
 	encoded, err := json.Marshal(identity)
 	if err != nil {
 		return "", err
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
 	return filepath.Join(root, "changes", "providers", digest+".json"), nil
+}
+
+func cacheEnvironment(prepared preparedExecution) map[string]string {
+	values := make(map[string]string, len(prepared.plan.Env)+len(prepared.manifest.Requires.Environment))
+	for name, value := range prepared.plan.Env {
+		values[name] = value
+	}
+	lookup := environmentLookup(prepared.environment)
+	for _, name := range prepared.manifest.Requires.Environment {
+		if value, ok := lookup(name); ok {
+			values[name] = value
+		}
+	}
+	return values
 }
 
 func identifyExecutable(command, workingDirectory string) (executableIdentity, error) {
@@ -486,14 +571,67 @@ func identifyExecutable(command, workingDirectory string) (executableIdentity, e
 	if resolved, resolveErr := filepath.EvalSymlinks(path); resolveErr == nil {
 		path = resolved
 	}
+	return identifyFile(path, false)
+}
+
+func identifyFile(path string, digest bool) (executableIdentity, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return executableIdentity{}, err
 	}
-	return executableIdentity{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano()}, nil
+	if !info.Mode().IsRegular() {
+		return executableIdentity{}, fmt.Errorf("%s is not a regular file", path)
+	}
+	identity := executableIdentity{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano()}
+	if digest {
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return executableIdentity{}, readErr
+		}
+		identity.Digest = fmt.Sprintf("%x", sha256.Sum256(content))
+	}
+	return identity, nil
 }
 
-func writeResult(path string, data []byte) error {
+type cachedResult struct {
+	CreatedAt time.Time `json:"createdAt"`
+	Response  Response  `json:"response"`
+}
+
+func readResult(path string, ttl time.Duration) (Response, bool) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() > maxProviderCacheEntryBytes {
+		return Response{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Response{}, false
+	}
+	var cached cachedResult
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cached); err != nil || cached.CreatedAt.IsZero() || time.Since(cached.CreatedAt) > ttl {
+		_ = os.Remove(path)
+		return Response{}, false
+	}
+	encoded, err := json.Marshal(cached.Response)
+	if err != nil || decodeResponse(bytes.NewReader(encoded), &cached.Response) != nil {
+		_ = os.Remove(path)
+		return Response{}, false
+	}
+	now := time.Now()
+	_ = os.Chtimes(path, now, now)
+	return cached.Response, true
+}
+
+func writeResult(path string, response Response, ttl time.Duration, maxEntries int) error {
+	data, err := json.Marshal(cachedResult{CreatedAt: time.Now().UTC(), Response: response})
+	if err != nil {
+		return err
+	}
+	if len(data) > maxProviderCacheEntryBytes {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -510,7 +648,107 @@ func writeResult(path string, data []byte) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	pruneResults(filepath.Dir(path), ttl, maxEntries)
+	return nil
+}
+
+func pruneResults(directory string, ttl time.Duration, maxEntries int) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return
+	}
+	type candidate struct {
+		path     string
+		modified time.Time
+	}
+	now := time.Now()
+	kept := make([]candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		info, statErr := entry.Info()
+		if statErr != nil {
+			continue
+		}
+		if info.Size() > maxProviderCacheEntryBytes || now.Sub(info.ModTime()) > ttl {
+			_ = os.Remove(path)
+			continue
+		}
+		kept = append(kept, candidate{path: path, modified: info.ModTime()})
+	}
+	if len(kept) <= maxEntries {
+		return
+	}
+	sort.Slice(kept, func(left, right int) bool {
+		if kept[left].modified.Equal(kept[right].modified) {
+			return kept[left].path < kept[right].path
+		}
+		return kept[left].modified.Before(kept[right].modified)
+	})
+	for _, entry := range kept[:len(kept)-maxEntries] {
+		_ = os.Remove(entry.path)
+	}
+}
+
+func resolveManifestCommand(manifest Manifest, manifestDirectory string) (Manifest, []string, error) {
+	if len(manifest.Command) == 0 {
+		return manifest, nil, errors.New("provider command is empty")
+	}
+	resolved := append([]string(nil), manifest.Command...)
+	var providerFiles []string
+	command := resolved[0]
+	if strings.ContainsRune(command, filepath.Separator) {
+		if !filepath.IsAbs(command) {
+			command = filepath.Join(manifestDirectory, command)
+		}
+		resolved[0] = filepath.Clean(command)
+	} else {
+		path, err := exec.LookPath(command)
+		if err != nil {
+			return manifest, nil, err
+		}
+		resolved[0] = path
+	}
+	for index := 1; index < len(resolved); index++ {
+		argument := resolved[index]
+		if strings.HasPrefix(argument, "-") || filepath.IsAbs(argument) {
+			continue
+		}
+		candidate := filepath.Join(manifestDirectory, argument)
+		if isExplicitRelativePath(argument) {
+			resolved[index] = filepath.Clean(candidate)
+			providerFiles = append(providerFiles, resolved[index])
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			resolved[index] = filepath.Clean(candidate)
+			providerFiles = append(providerFiles, resolved[index])
+		}
+	}
+	manifest.Command = resolved
+	manifest.Requires.Commands = resolveRequiredCommands(manifest.Requires.Commands, manifestDirectory)
+	return manifest, uniquePaths(providerFiles), nil
+}
+
+func resolveRequiredCommands(commands []string, manifestDirectory string) []string {
+	resolved := append([]string(nil), commands...)
+	for index, command := range resolved {
+		if strings.ContainsRune(command, filepath.Separator) && !filepath.IsAbs(command) {
+			resolved[index] = filepath.Clean(filepath.Join(manifestDirectory, command))
+		}
+	}
+	return resolved
+}
+
+func isExplicitRelativePath(value string) bool {
+	return value == "." || value == ".." ||
+		strings.HasPrefix(value, "."+string(filepath.Separator)) ||
+		strings.HasPrefix(value, ".."+string(filepath.Separator))
 }
 
 // Validate checks the shared manifest and probes every Changes action.
@@ -523,17 +761,33 @@ func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 			Checks:   []providerlib.Check{failedCheck("manifest", loaded.Path, errors.New(loaded.Problem))},
 		}
 	}
-	report := providerlib.Validator{LookupEnv: validationEnvironmentLookup(manifest)}.Validate(manifest, "")
+	manifestDirectory, err := providerManifestDirectory(loaded.Path, "")
+	if err != nil {
+		return Validation{
+			Manifest: manifest, Path: loaded.Path,
+			Checks: []providerlib.Check{failedCheck("manifest-directory", loaded.Path, err)},
+		}
+	}
+	resolved, _, err := resolveManifestCommand(manifest, manifestDirectory)
+	if err != nil {
+		return Validation{
+			Manifest: manifest, Path: loaded.Path,
+			Checks: []providerlib.Check{failedCheck("command", manifest.Name, err)},
+		}
+	}
+	directory, err := source.ValidationFixture()
+	if err != nil {
+		return Validation{
+			Manifest: manifest, Path: loaded.Path,
+			Checks: []providerlib.Check{failedCheck("fixture", manifest.Name, err)},
+		}
+	}
+	defer func() { _ = os.RemoveAll(directory) }()
+	report := providerlib.Validator{LookupEnv: validationEnvironmentLookup(resolved)}.Validate(resolved, directory)
 	validation := Validation{Manifest: manifest, Path: loaded.Path, Checks: report.Checks}
 	if !report.OK() {
 		return validation
 	}
-	directory, err := source.ValidationFixture()
-	if err != nil {
-		validation.Checks = append(validation.Checks, failedCheck("fixture", manifest.Name, err))
-		return validation
-	}
-	defer func() { _ = os.RemoveAll(directory) }()
 	request := Request{
 		Directory: directory, Files: []string{"main.ts"}, Fingerprint: "provider-validation",
 	}
@@ -546,7 +800,12 @@ func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 		prepared, payload, err := prepareRequest(request, action)
 		if err == nil {
 			var response Response
-			response, err = execute(ctx, manifest, action, prepared, payload)
+			execution, prepareErr := prepareExecution(LoadedManifest{Manifest: resolved, Path: loaded.Path}, action, prepared)
+			if prepareErr != nil {
+				err = prepareErr
+			} else {
+				response, err = execute(ctx, execution, payload)
+			}
 			if err == nil {
 				err = validateSemantics(action, response)
 			}

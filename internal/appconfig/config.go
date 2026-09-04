@@ -17,8 +17,10 @@ type Config struct {
 
 // Providers controls external provider discovery and execution.
 type Providers struct {
-	Directory string               `json:"directory,omitempty" yaml:"directory,omitempty"`
-	Timeout   providerlib.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	CacheMaxEntries int                  `json:"cacheMaxEntries,omitempty" yaml:"cacheMaxEntries,omitempty" jsonschema:"minimum=0"`
+	CacheTTL        providerlib.Duration `json:"cacheTtl,omitempty" yaml:"cacheTtl,omitempty"`
+	Directory       string               `json:"directory,omitempty" yaml:"directory,omitempty"`
+	Timeout         providerlib.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // Diff configures patch display and Git-compatible file comparison separately.
@@ -37,7 +39,11 @@ func Default() Config {
 			Engine: "builtin",
 			Layout: "unified",
 		},
-		Providers: Providers{Timeout: providerlib.Duration(20 * time.Second)},
+		Providers: Providers{
+			CacheMaxEntries: 256,
+			CacheTTL:        providerlib.Duration(time.Hour),
+			Timeout:         providerlib.Duration(20 * time.Second),
+		},
 	}
 }
 

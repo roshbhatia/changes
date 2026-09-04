@@ -40,6 +40,13 @@
     },
     "Providers": {
       "properties": {
+        "cacheMaxEntries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheTtl": {
+          "$ref": "#/$defs/Duration"
+        },
         "directory": {
           "type": "string"
         },

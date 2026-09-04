@@ -235,7 +235,7 @@ printf '%s\n' '{"version":"changes.provider/v1","symbols":{"space and\nnewline.g
 		"@@ -1 +1 @@\n-old\n+new\n"
 	view := renderer{
 		specs: []source.Spec{{Dir: directory}}, syms: true, budget: 5 * time.Second,
-		providers: []provider.Manifest{configured}, width: 100,
+		providers: []provider.LoadedManifest{{Manifest: configured}}, width: 100,
 	}
 	options := view.diffOptions([]string{patch}, true)
 	if len(options.Files) != 1 || options.Files[0].Path != `"space and\nnewline.go"` {

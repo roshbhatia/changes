@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultUsesBuiltinWithoutProvidersOrDifftool(t *testing.T) {
@@ -24,6 +25,8 @@ func TestLoadYAMLAndEnvironment(t *testing.T) {
   layout: unified
 color: auto
 providers:
+  cacheMaxEntries: 32
+  cacheTtl: 30m
   directory: /tmp/providers
   timeout: 15s
 `
@@ -32,6 +35,7 @@ providers:
 	}
 	t.Setenv("CHANGES_DIFF_LAYOUT", "side-by-side")
 	t.Setenv("CHANGES_PROVIDERS_DIRECTORY", "/tmp/environment-providers")
+	t.Setenv("CHANGES_PROVIDERS_CACHE_TTL", "45m")
 	configured, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -42,6 +46,9 @@ providers:
 	if configured.Diff.Filter[0] != "review-patch" || configured.Diff.Difftool[0] != "review-files" {
 		t.Fatalf("loaded diff commands = %+v", configured.Diff)
 	}
+	if configured.Providers.CacheMaxEntries != 32 || configured.Providers.CacheTTL.Duration() != 45*time.Minute {
+		t.Fatalf("loaded cache config = %+v", configured.Providers)
+	}
 }
 
 func TestSchemaIncludesProviders(t *testing.T) {
@@ -49,7 +56,9 @@ func TestSchemaIncludesProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"$schema"`, `"providers"`, `"directory"`, `"filter"`, `"difftool"`} {
+	for _, want := range []string{
+		`"$schema"`, `"providers"`, `"cacheMaxEntries"`, `"cacheTtl"`, `"directory"`, `"filter"`, `"difftool"`,
+	} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("schema omits %s", want)
 		}

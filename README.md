@@ -73,6 +73,8 @@ diff:
   filter: [delta, --paging=never]
   difftool: [difft, --color, always, --display, side-by-side, $LOCAL, $REMOTE]
 providers:
+  cacheMaxEntries: 256
+  cacheTtl: 1h
   timeout: 20s
 ```
 
@@ -101,6 +103,11 @@ Each provider uses the shared `provider/v1` manifest. Actions add arguments and
 environment values through Go templates. Changes executes the resulting argv
 directly and never inserts a shell. The core only knows the semantic actions
 `changes.symbols` and `changes.calls`.
+
+Provider results expire after `providers.cacheTtl`. Changes keeps at most
+`providers.cacheMaxEntries` persistent results. Set either value to zero to
+disable the provider cache. Relative executables and static script arguments
+resolve from the directory that contains the provider manifest.
 
 See [`extras/README.md`](extras/README.md) for concrete manifests and package
 definitions. Each provider directory owns its executable adapter, manifest,
