@@ -32,7 +32,7 @@ nix profile install github:roshbhatia/changes#full
 Install a release and its shell completions with Homebrew:
 
 ```bash
-brew install --cask roshbhatia/tap/changes
+brew install roshbhatia/tap/changes
 ```
 
 `go install github.com/roshbhatia/changes/cmd/changes@latest` installs the core
