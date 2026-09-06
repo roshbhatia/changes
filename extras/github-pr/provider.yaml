@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../../schema/provider.schema.json
+version: provider/v1
+name: github-pr
+description: Read GitHub pull request review threads as diff notes
+command: [changes-provider-github-pr]
+actions:
+  changes.notes:
+    description: Read review threads for the current branch pull request
+defaults:
+  timeout: 20s
+  priority: 70

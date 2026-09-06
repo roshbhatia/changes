@@ -1,0 +1,970 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/mattn/go-shellwords"
+	"github.com/roshbhatia/changes/internal/appconfig"
+	"github.com/roshbhatia/changes/internal/provider"
+	"github.com/roshbhatia/changes/internal/source"
+	"github.com/roshbhatia/go-utils/completion"
+	gitutil "github.com/roshbhatia/go-utils/git"
+)
+
+const maxNoteMessageBytes = 1 << 20
+
+type noteDocument struct {
+	Version string          `json:"version"`
+	Notes   []provider.Note `json:"notes"`
+}
+
+type noteComparisonFlags struct {
+	commit string
+	from   string
+	to     string
+	staged bool
+}
+
+func runNote(args []string) {
+	metadata := subcommandMetadata("note")
+	if len(args) == 1 && isHelp(args[0]) {
+		flags := flag.NewFlagSet("changes note", flag.ContinueOnError)
+		printCommandHelp(flags.Output(), "changes note <command>", metadata, flags)
+		return
+	}
+	if len(args) == 0 || (args[0] != "add" && args[0] != "list") {
+		fail(errors.New("note requires add or list"))
+	}
+	if args[0] == "add" {
+		runNoteAdd(args[1:])
+		return
+	}
+	runNoteList(args[1:])
+}
+
+func runNoteAdd(args []string) {
+	metadata := subcommandMetadata("note", "add")
+	flags := flag.NewFlagSet("changes note add", flag.ContinueOnError)
+	configPath := flags.String("config", argumentValue(args, "config"), flagDescription(metadata, "config"))
+	file := flags.String("file", "", flagDescription(metadata, "file"))
+	line := flags.Int("line", 0, flagDescription(metadata, "line"))
+	startLine := flags.Int("start-line", 0, flagDescription(metadata, "start-line"))
+	side := flags.String("side", "right", flagDescription(metadata, "side"))
+	message := flags.String("message", "", flagDescription(metadata, "message"))
+	messageFile := flags.String("message-file", "", flagDescription(metadata, "message-file"))
+	author := flags.String("author", "", flagDescription(metadata, "author"))
+	origin := flags.String("origin", provider.NoteOriginUser, flagDescription(metadata, "origin"))
+	session := flags.String("session", "", flagDescription(metadata, "session"))
+	providerName := flags.String("provider", "", flagDescription(metadata, "provider"))
+	asJSON := flags.Bool("json", false, flagDescription(metadata, "json"))
+	comparison := addNoteComparisonFlags(flags, metadata)
+	flags.Usage = func() {
+		printCommandHelp(flags.Output(), "changes note add [flags]", metadata, flags)
+	}
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		fail(err)
+	}
+	if flags.NArg() != 0 {
+		fail(errors.New("note add accepts only flags"))
+	}
+	if *file == "" {
+		fail(errors.New("note add requires --file"))
+	}
+	if *line < 0 || *startLine < 0 || (*line == 0 && *startLine != 0) || (*line > 0 && *startLine > *line) {
+		fail(errors.New("note range must use non-negative lines with start-line before line"))
+	}
+	messageSet := false
+	messageFileSet := false
+	flags.Visit(func(found *flag.Flag) {
+		messageSet = messageSet || found.Name == "message"
+		messageFileSet = messageFileSet || found.Name == "message-file"
+	})
+	resolvedSide, err := noteSide(*side)
+	if err != nil {
+		fail(err)
+	}
+	if messageSet && messageFileSet {
+		fail(errors.New("--message and --message-file are mutually exclusive"))
+	}
+	configured, err := appconfig.Load(*configPath)
+	if err != nil {
+		fail(err)
+	}
+	interactive := !messageSet && !messageFileSet
+	rawMessage := *message
+	if messageFileSet {
+		rawMessage, err = readNoteMessage(*messageFile)
+		if err != nil {
+			fail(err)
+		}
+	}
+	if interactive {
+		rawMessage, err = editNote(configured.Notes.Editor)
+		if err != nil {
+			fail(err)
+		}
+		if rawMessage == "" {
+			return
+		}
+	}
+	summary, rationale := splitNoteMessage(rawMessage, interactive)
+	if summary == "" {
+		fail(errors.New("note message has no summary"))
+	}
+	if *author == "" {
+		*author = defaultNoteAuthor()
+	}
+	if *origin != provider.NoteOriginAgent && *origin != provider.NoteOriginUser {
+		fail(errors.New("--origin must be agent or user"))
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fail(err)
+	}
+	spec, relative, err := noteSpec(cwd, *file, *comparison)
+	if err != nil {
+		fail(err)
+	}
+	comparisonSpec := spec
+	comparisonSpec.Paths = nil
+	comparisonPatch, base, head, err := stableNoteComparison(comparisonSpec)
+	if err != nil {
+		fail(err)
+	}
+	contextLine, err := noteRangeInFilePatch(comparisonPatch, relative, resolvedSide, *startLine, *line)
+	if err != nil {
+		fail(fmt.Errorf("%s: %w", relative, err))
+	}
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(comparisonPatch)))
+	draft := &provider.NoteDraft{
+		Summary: summary, Rationale: rationale, Author: *author, Origin: *origin, Session: *session,
+		Anchor: provider.NoteAnchor{
+			Path: relative, Side: resolvedSide, StartSide: rangeStartSide(resolvedSide, *startLine),
+			StartLine: *startLine, Line: *line,
+			Base: base, Head: head, Fingerprint: fingerprint, Context: contextLine,
+			Target: noteTarget(spec),
+		},
+	}
+	discovery, err := provider.Discover(configured.Providers.Directory)
+	if err != nil {
+		fail(err)
+	}
+	writable, err := selectNoteProviders(discovery.Providers, provider.ActionNotesCreate, *providerName)
+	if err != nil {
+		fail(err)
+	}
+	if len(writable) == 0 {
+		fail(fmt.Errorf("no configured provider implements %s", provider.ActionNotesCreate))
+	}
+	selected := writable[0]
+	request := noteRequestWithIDs(comparisonSpec, []string{relative}, comparisonPatch, base, head)
+	request.Note = draft
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(configured.Providers.Timeout))
+	response, err := provider.Run(ctx, selected, provider.ActionNotesCreate, request, provider.CachePolicy{})
+	cancel()
+	if err != nil {
+		fail(err)
+	}
+	created := response.Notes[0]
+	if *asJSON {
+		data, err := json.Marshal(created)
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+	fmt.Printf("note: %s %s\n", cleanNoteOneLine(created.ID), noteLocation(created))
+}
+
+func runNoteList(args []string) {
+	metadata := subcommandMetadata("note", "list")
+	flags := flag.NewFlagSet("changes note list", flag.ContinueOnError)
+	configPath := flags.String("config", argumentValue(args, "config"), flagDescription(metadata, "config"))
+	providerName := flags.String("provider", "", flagDescription(metadata, "provider"))
+	asJSON := flags.Bool("json", false, flagDescription(metadata, "json"))
+	comparison := addNoteComparisonFlags(flags, metadata)
+	flags.Usage = func() {
+		printCommandHelp(flags.Output(), "changes note list [flags]", metadata, flags)
+	}
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		fail(err)
+	}
+	if flags.NArg() != 0 {
+		fail(errors.New("note list accepts only flags"))
+	}
+	configured, err := appconfig.Load(*configPath)
+	if err != nil {
+		fail(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fail(err)
+	}
+	spec, _, err := noteSpec(cwd, "", *comparison)
+	if err != nil {
+		fail(err)
+	}
+	snapshot, err := stableNoteSnapshot(spec)
+	if err != nil {
+		fail(err)
+	}
+	discovery, err := provider.Discover(configured.Providers.Directory)
+	if err != nil {
+		fail(err)
+	}
+	readers, err := selectNoteProviders(discovery.Providers, provider.ActionNotes, *providerName)
+	if err != nil {
+		fail(err)
+	}
+	notes, failures := readNotes(
+		spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head,
+		readers, time.Duration(configured.Providers.Timeout),
+	)
+	if len(failures) > 0 {
+		fail(errors.Join(failures...))
+	}
+	if *asJSON {
+		if notes == nil {
+			notes = []provider.Note{}
+		}
+		data, err := json.Marshal(noteDocument{Version: "changes.notes/v1", Notes: notes})
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+	if output := renderNoteRows(notes, 100); output != "" {
+		fmt.Println(output)
+	}
+}
+
+func addNoteComparisonFlags(flags *flag.FlagSet, metadata completion.Command) *noteComparisonFlags {
+	comparison := &noteComparisonFlags{}
+	flags.StringVar(&comparison.commit, "commit", "", flagDescription(metadata, "commit"))
+	flags.StringVar(&comparison.from, "from", "", flagDescription(metadata, "from"))
+	flags.StringVar(&comparison.to, "to", "", flagDescription(metadata, "to"))
+	flags.BoolVar(&comparison.staged, "staged", false, flagDescription(metadata, "staged"))
+	return comparison
+}
+
+func noteSpec(cwd, file string, flags noteComparisonFlags) (source.Spec, string, error) {
+	root, err := source.Root(cwd)
+	if err != nil {
+		return source.Spec{}, "", err
+	}
+	if flags.commit != "" && (flags.from != "" || flags.to != "" || flags.staged) {
+		return source.Spec{}, "", errors.New("--commit cannot be combined with --from, --to, or --staged")
+	}
+	if flags.to != "" && flags.from == "" {
+		return source.Spec{}, "", errors.New("--to requires --from")
+	}
+	if flags.staged && flags.to != "" {
+		return source.Spec{}, "", errors.New("--staged cannot be combined with --to")
+	}
+	spec := source.Spec{Dir: root, From: flags.from, To: flags.to, Staged: flags.staged}
+	if flags.commit != "" {
+		head, err := gitutil.Output(root, "rev-parse", "--verify", flags.commit+"^{commit}")
+		if err != nil {
+			return source.Spec{}, "", fmt.Errorf("resolve --commit %q: %w", flags.commit, err)
+		}
+		base, err := gitutil.Output(root, "rev-parse", "--verify", strings.TrimSpace(head)+"^1")
+		if err != nil {
+			return source.Spec{}, "", fmt.Errorf("--commit %q has no first parent; use --from and --to", flags.commit)
+		}
+		spec.From, spec.To = strings.TrimSpace(base), strings.TrimSpace(head)
+	}
+	if file == "" {
+		return spec, "", nil
+	}
+	absolute := file
+	if !filepath.IsAbs(absolute) {
+		resolvedCWD, resolveErr := filepath.EvalSymlinks(cwd)
+		if resolveErr != nil {
+			return source.Spec{}, "", resolveErr
+		}
+		absolute = filepath.Join(resolvedCWD, absolute)
+	} else {
+		resolvedParent, resolveErr := filepath.EvalSymlinks(filepath.Dir(absolute))
+		if resolveErr != nil {
+			return source.Spec{}, "", resolveErr
+		}
+		absolute = filepath.Join(resolvedParent, filepath.Base(absolute))
+	}
+	absolute = filepath.Clean(absolute)
+	relative, err := filepath.Rel(root, absolute)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return source.Spec{}, "", fmt.Errorf("--file %q must be inside %s", file, root)
+	}
+	relative = filepath.ToSlash(relative)
+	spec.Paths = []string{absolute}
+	return spec, relative, nil
+}
+
+func noteRequestWithIDs(spec source.Spec, files []string, patch, base, head string) provider.Request {
+	return provider.Request{
+		Base: base, Head: head, Directory: spec.Dir, Files: files,
+		From: spec.From, To: spec.To, Staged: spec.Staged,
+		Fingerprint: fmt.Sprintf("%x", sha256.Sum256([]byte(patch))),
+	}
+}
+
+func stableNoteComparison(spec source.Spec) (patch, base, head string, err error) {
+	return stableComparison(spec.ComparisonIDs, spec.Diff)
+}
+
+func stableComparison(
+	readIDs func() (string, string),
+	readPatch func() (string, error),
+) (patch, base, head string, err error) {
+	for range 3 {
+		base, head = readIDs()
+		patch, err = readPatch()
+		if err != nil {
+			return "", "", "", err
+		}
+		afterBase, afterHead := readIDs()
+		if base == afterBase && head == afterHead {
+			return patch, base, head, nil
+		}
+	}
+	return "", "", "", errors.New("selected comparison changed while capturing the note")
+}
+
+type noteSnapshot struct {
+	patch string
+	files []string
+	base  string
+	head  string
+}
+
+func stableNoteSnapshot(spec source.Spec) (noteSnapshot, error) {
+	comparison := spec
+	comparison.Paths = nil
+	for range 3 {
+		base, head := comparison.ComparisonIDs()
+		before, err := comparison.Diff()
+		if err != nil {
+			return noteSnapshot{}, err
+		}
+		files, err := comparison.NoteFiles()
+		if err != nil {
+			return noteSnapshot{}, err
+		}
+		after, err := comparison.Diff()
+		if err != nil {
+			return noteSnapshot{}, err
+		}
+		afterFiles, err := comparison.NoteFiles()
+		if err != nil {
+			return noteSnapshot{}, err
+		}
+		afterBase, afterHead := comparison.ComparisonIDs()
+		if base == afterBase && head == afterHead && before == after && slices.Equal(files, afterFiles) {
+			return noteSnapshot{patch: before, files: files, base: base, head: head}, nil
+		}
+	}
+	return noteSnapshot{}, errors.New("selected comparison changed while reading notes")
+}
+
+func noteTarget(spec source.Spec) string {
+	if spec.To != "" {
+		return provider.NoteTargetCommits
+	}
+	if spec.Staged {
+		return provider.NoteTargetIndex
+	}
+	return provider.NoteTargetWorking
+}
+
+func readNotes(
+	spec source.Spec,
+	files []string,
+	patch string,
+	base string,
+	head string,
+	providers []provider.LoadedManifest,
+	budget time.Duration,
+) ([]provider.Note, []error) {
+	if len(files) == 0 {
+		return []provider.Note{}, nil
+	}
+	request := noteRequestWithIDs(spec, files, patch, base, head)
+	allowed := make(map[string]bool, len(files))
+	for _, path := range files {
+		allowed[filepath.ToSlash(filepath.Clean(path))] = true
+	}
+	all := []provider.Note{}
+	var failures []error
+	for _, configured := range providers {
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		response, err := provider.Run(ctx, configured, provider.ActionNotes, request, provider.CachePolicy{})
+		cancel()
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		for _, note := range response.Notes {
+			path, _ := notePosition(note)
+			if !allowed[filepath.ToSlash(filepath.Clean(path))] {
+				continue
+			}
+			if err := validateNoteVisibility(patch, &note); err != nil {
+				failures = append(failures, fmt.Errorf("provider %s: %w", configured.Manifest.Name, err))
+				continue
+			}
+			all = append(all, note)
+		}
+	}
+	sortNotes(all)
+	return all, failures
+}
+
+func validateNoteVisibility(patch string, note *provider.Note) error {
+	placement := &note.Placement
+	if placement.Line == 0 || placement.Quality != provider.PlacementExact && placement.Quality != provider.PlacementContext {
+		return nil
+	}
+	if placement.StartLine > 0 && placement.StartSide != placement.Side {
+		if _, err := noteRangeInFilePatch(patch, placement.Path, placement.StartSide, 0, placement.StartLine); err != nil {
+			if degradeContextPlacement(placement) {
+				return nil
+			}
+			return fmt.Errorf("note %q has an invisible %s range start: %w", note.ID, placement.Quality, err)
+		}
+		context, err := noteRangeInFilePatch(patch, placement.Path, placement.Side, 0, placement.Line)
+		if err != nil {
+			if degradeContextPlacement(placement) {
+				return nil
+			}
+			return fmt.Errorf("note %q has an invisible %s range end: %w", note.ID, placement.Quality, err)
+		}
+		if !contextPlacementMatches(note, context) {
+			degradeContextPlacement(placement)
+		}
+		return nil
+	}
+	context, err := noteRangeInFilePatch(patch, placement.Path, placement.Side, placement.StartLine, placement.Line)
+	if err != nil {
+		if degradeContextPlacement(placement) {
+			return nil
+		}
+		return fmt.Errorf("note %q has an invisible %s placement: %w", note.ID, placement.Quality, err)
+	}
+	if !contextPlacementMatches(note, context) {
+		degradeContextPlacement(placement)
+	}
+	return nil
+}
+
+func contextPlacementMatches(note *provider.Note, context string) bool {
+	if note.Placement.Quality != provider.PlacementContext {
+		return true
+	}
+	return normalizedNoteContext(context) != "" &&
+		normalizedNoteContext(context) == normalizedNoteContext(note.Anchor.Context)
+}
+
+func normalizedNoteContext(value string) string {
+	runes := []rune(strings.TrimSpace(cleanNoteOneLine(value)))
+	if len(runes) > 200 {
+		runes = runes[:200]
+	}
+	return string(runes)
+}
+
+func degradeContextPlacement(placement *provider.NotePlacement) bool {
+	if placement.Quality != provider.PlacementContext {
+		return false
+	}
+	placement.StartSide = ""
+	placement.StartLine = 0
+	placement.Line = 0
+	placement.Quality = provider.PlacementFile
+	return true
+}
+
+func selectNoteProviders(
+	configured []provider.LoadedManifest,
+	action string,
+	name string,
+) ([]provider.LoadedManifest, error) {
+	selected := []provider.LoadedManifest{}
+	known := false
+	for _, candidate := range configured {
+		if name != "" && candidate.Manifest.Name == name {
+			known = true
+		}
+		if (name == "" || candidate.Manifest.Name == name) && provider.Supports(candidate.Manifest, action) {
+			selected = append(selected, candidate)
+		}
+	}
+	if name != "" && !known {
+		return nil, fmt.Errorf("unknown provider %q", name)
+	}
+	if name != "" && len(selected) == 0 {
+		return nil, fmt.Errorf("provider %q does not implement %s", name, action)
+	}
+	return selected, nil
+}
+
+func noteLineInPatch(patch, side string, wanted int) (string, error) {
+	return noteRangeInPatch(patch, side, 0, wanted)
+}
+
+func noteRangeInPatch(patch, side string, start, end int) (string, error) {
+	if end == 0 {
+		return "", nil
+	}
+	visible := map[int]string{}
+	oldLine, newLine := 0, 0
+	inHunk := false
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			inHunk = false
+		case strings.HasPrefix(line, "@@"):
+			oldLine = patchHunkStart(line, '-')
+			newLine = patchHunkStart(line, '+')
+			inHunk = true
+		case !inHunk || line == "" || strings.HasPrefix(line, "\\ No newline"):
+			continue
+		case line[0] == '-':
+			if side == provider.NoteSideLeft {
+				visible[oldLine] = line[1:]
+			}
+			oldLine++
+		case line[0] == '+':
+			if side == provider.NoteSideRight {
+				visible[newLine] = line[1:]
+			}
+			newLine++
+		case line[0] == ' ':
+			if side == provider.NoteSideLeft {
+				visible[oldLine] = line[1:]
+			} else {
+				visible[newLine] = line[1:]
+			}
+			oldLine++
+			newLine++
+		}
+	}
+	first := start
+	if first == 0 {
+		first = end
+	}
+	if end-first+1 > len(visible) {
+		return "", fmt.Errorf("range %d-%d is not fully visible on the %s side of the selected diff", first, end, strings.ToLower(side))
+	}
+	for line := first; line <= end; line++ {
+		if _, ok := visible[line]; !ok {
+			return "", fmt.Errorf("line %d is not visible on the %s side of the selected diff", line, strings.ToLower(side))
+		}
+	}
+	return visible[end], nil
+}
+
+func patchHunkStart(header string, marker byte) int {
+	for _, field := range strings.Fields(header) {
+		if len(field) < 2 || field[0] != marker {
+			continue
+		}
+		value := strings.TrimPrefix(field, string(marker))
+		if before, _, found := strings.Cut(value, ","); found {
+			value = before
+		}
+		line, err := strconv.Atoi(value)
+		if err == nil {
+			return line
+		}
+	}
+	return 0
+}
+
+func noteRangeInFilePatch(patch, path, side string, start, end int) (string, error) {
+	for _, section := range splitPatchFiles(patch) {
+		candidate := section.newPath
+		if side == provider.NoteSideLeft {
+			candidate = section.oldPath
+		}
+		if candidate == path || sectionHeaderMatches(section.header, path, side) {
+			if end > 0 && (strings.HasPrefix(section.header, "diff --cc ") || strings.HasPrefix(section.header, "diff --combined ")) {
+				return "", errors.New("combined diffs support file notes only")
+			}
+			return noteRangeInPatch(section.patch, side, start, end)
+		}
+	}
+	return "", errors.New("file is not changed in the selected comparison")
+}
+
+type patchFile struct {
+	oldPath string
+	newPath string
+	header  string
+	patch   string
+}
+
+func splitPatchFiles(patch string) []patchFile {
+	files := []patchFile{}
+	current := patchFile{}
+	inHeaders := false
+	var section strings.Builder
+	flush := func() {
+		if section.Len() == 0 {
+			return
+		}
+		current.patch = section.String()
+		files = append(files, current)
+		current = patchFile{}
+		section.Reset()
+	}
+	for _, line := range strings.SplitAfter(patch, "\n") {
+		if prefix := combinedDiffPrefix(line); prefix != "" {
+			flush()
+			inHeaders = true
+			path := patchHeaderPath(line, prefix, "")
+			current.oldPath, current.newPath = path, path
+			current.header = strings.TrimSuffix(line, "\n")
+		} else if strings.HasPrefix(line, "diff --git ") {
+			flush()
+			inHeaders = true
+			current.oldPath, current.newPath = diffHeaderPaths(line)
+			current.header = strings.TrimSuffix(line, "\n")
+		}
+		section.WriteString(line)
+		if strings.HasPrefix(line, "@@") {
+			inHeaders = false
+		} else if inHeaders && strings.HasPrefix(line, "--- ") {
+			current.oldPath = patchHeaderPath(line, "--- ", "a/")
+		} else if inHeaders && strings.HasPrefix(line, "+++ ") {
+			current.newPath = patchHeaderPath(line, "+++ ", "b/")
+		}
+	}
+	flush()
+	return files
+}
+
+func sectionHeaderMatches(header, path, side string) bool {
+	if header == "diff --cc "+path || header == "diff --combined "+path {
+		return true
+	}
+	if side == provider.NoteSideLeft {
+		return strings.HasPrefix(header, "diff --git a/"+path+" ")
+	}
+	return strings.HasSuffix(header, " b/"+path)
+}
+
+func combinedDiffPrefix(line string) string {
+	for _, prefix := range []string{"diff --cc ", "diff --combined "} {
+		if strings.HasPrefix(line, prefix) {
+			return prefix
+		}
+	}
+	return ""
+}
+
+func diffHeaderPaths(line string) (string, string) {
+	tokens := diffHeaderTokens(strings.TrimSuffix(strings.TrimPrefix(line, "diff --git "), "\n"))
+	if len(tokens) != 2 {
+		return "", ""
+	}
+	return filepath.ToSlash(strings.TrimPrefix(tokens[0], "a/")),
+		filepath.ToSlash(strings.TrimPrefix(tokens[1], "b/"))
+}
+
+func diffHeaderTokens(value string) []string {
+	tokens := []string{}
+	for index := 0; index < len(value); {
+		for index < len(value) && value[index] == ' ' {
+			index++
+		}
+		if index == len(value) {
+			break
+		}
+		start := index
+		if value[index] == '"' {
+			index++
+			escaped := false
+			for index < len(value) {
+				character := value[index]
+				index++
+				if escaped {
+					escaped = false
+					continue
+				}
+				if character == '\\' {
+					escaped = true
+					continue
+				}
+				if character == '"' {
+					break
+				}
+			}
+			decoded, err := strconv.Unquote(value[start:index])
+			if err != nil {
+				return nil
+			}
+			tokens = append(tokens, decoded)
+			continue
+		}
+		for index < len(value) && value[index] != ' ' {
+			index++
+		}
+		tokens = append(tokens, value[start:index])
+	}
+	return tokens
+}
+
+func patchHeaderPath(line, marker, sidePrefix string) string {
+	value := strings.TrimSuffix(strings.TrimPrefix(line, marker), "\n")
+	if strings.HasPrefix(value, "\"") {
+		decoded, err := strconv.Unquote(value)
+		if err != nil {
+			return ""
+		}
+		value = decoded
+	}
+	if value == "/dev/null" {
+		return ""
+	}
+	return filepath.ToSlash(strings.TrimPrefix(value, sidePrefix))
+}
+
+func rangeStartSide(side string, start int) string {
+	if start == 0 {
+		return ""
+	}
+	return side
+}
+
+func noteSide(value string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "LEFT":
+		return provider.NoteSideLeft, nil
+	case "RIGHT":
+		return provider.NoteSideRight, nil
+	default:
+		return "", fmt.Errorf("--side must be left or right, got %q", value)
+	}
+}
+
+func readNoteMessage(path string) (string, error) {
+	var reader io.Reader
+	if path == "-" {
+		reader = os.Stdin
+	} else {
+		file, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer file.Close()
+		reader = file
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, maxNoteMessageBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxNoteMessageBytes {
+		return "", fmt.Errorf("note message exceeds %d bytes", maxNoteMessageBytes)
+	}
+	return string(data), nil
+}
+
+func editNote(configured []string) (string, error) {
+	temporary, err := os.CreateTemp("", "changes-note-*.md")
+	if err != nil {
+		return "", err
+	}
+	path := temporary.Name()
+	defer os.Remove(path)
+	template := "\n# Write the summary on the first line. Remaining text is the rationale.\n# Empty or comment-only content cancels the note.\n"
+	if _, err := temporary.WriteString(template); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if err := temporary.Close(); err != nil {
+		return "", err
+	}
+	command := append([]string(nil), configured...)
+	if len(command) == 0 {
+		value := os.Getenv("VISUAL")
+		if value == "" {
+			value = os.Getenv("EDITOR")
+		}
+		if value == "" {
+			value = "vi"
+		}
+		command, err = shellwords.Parse(value)
+		if err != nil {
+			return "", fmt.Errorf("parse note editor: %w", err)
+		}
+	}
+	if len(command) == 0 || command[0] == "" {
+		return "", errors.New("note editor command is empty")
+	}
+	found := false
+	for index := range command {
+		if strings.Contains(command[index], "$FILE") {
+			command[index] = strings.ReplaceAll(command[index], "$FILE", path)
+			found = true
+		}
+	}
+	if !found {
+		command = append(command, path)
+	}
+	process := exec.Command(command[0], command[1:]...)
+	process.Stdin, process.Stdout, process.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := process.Run(); err != nil {
+		return "", fmt.Errorf("note editor %s: %w", command[0], err)
+	}
+	return readNoteMessage(path)
+}
+
+func splitNoteMessage(message string, comments bool) (string, string) {
+	message = strings.ReplaceAll(message, "\r\n", "\n")
+	lines := strings.Split(message, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if comments && strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		kept = append(kept, cleanNoteText(line))
+	}
+	for index, line := range kept {
+		if summary := strings.TrimSpace(line); summary != "" {
+			return summary, strings.TrimSpace(strings.Join(kept[index+1:], "\n"))
+		}
+	}
+	return "", ""
+}
+
+func defaultNoteAuthor() string {
+	if value, err := gitutil.Output(".", "config", "user.email"); err == nil && value != "" {
+		return value
+	}
+	if value, err := gitutil.Output(".", "config", "user.name"); err == nil && value != "" {
+		return value
+	}
+	if value := os.Getenv("USER"); value != "" {
+		return value
+	}
+	return "user"
+}
+
+func sortNotes(notes []provider.Note) {
+	sort.SliceStable(notes, func(left, right int) bool {
+		lpath, lline := notePosition(notes[left])
+		rpath, rline := notePosition(notes[right])
+		if lpath != rpath {
+			return lpath < rpath
+		}
+		if lline != rline {
+			return lline < rline
+		}
+		if notes[left].CreatedAt != notes[right].CreatedAt {
+			return notes[left].CreatedAt < notes[right].CreatedAt
+		}
+		return notes[left].ID < notes[right].ID
+	})
+}
+
+func notePosition(note provider.Note) (string, int) {
+	if note.Placement.Quality == provider.PlacementOrphan {
+		return note.Anchor.Path, note.Anchor.Line
+	}
+	return note.Placement.Path, note.Placement.Line
+}
+
+func renderNoteRows(notes []provider.Note, width int) string {
+	if len(notes) == 0 {
+		return ""
+	}
+	rows := make([]string, 0, len(notes)*2+1)
+	rows = append(rows, contextTitle.Render("notes"))
+	for _, note := range notes {
+		location := noteLocation(note)
+		state := note.State
+		if note.Placement.Quality != provider.PlacementExact {
+			state += "/" + note.Placement.Quality
+		}
+		header := contextPath.Render(location) + " · " + contextKind.Render(state+" ") +
+			cleanNoteOneLine(note.Author) + " via " + cleanNoteOneLine(note.Source)
+		rows = append(rows, header)
+		body := cleanNoteOneLine(note.Summary)
+		if rationale := cleanNoteOneLine(note.Rationale); rationale != "" {
+			body += " - " + rationale
+		}
+		if width > 4 && len([]rune(body)) > width-4 {
+			body = string([]rune(body)[:width-5]) + "…"
+		}
+		rows = append(rows, "  "+body)
+	}
+	return strings.Join(rows, "\n")
+}
+
+func noteLocation(note provider.Note) string {
+	location := note.Placement
+	if location.Quality == provider.PlacementOrphan {
+		location = provider.NotePlacement{
+			Path: note.Anchor.Path, Side: note.Anchor.Side, StartSide: note.Anchor.StartSide,
+			StartLine: note.Anchor.StartLine, Line: note.Anchor.Line,
+		}
+	}
+	value := cleanNoteOneLine(location.Path)
+	if location.Line == 0 {
+		return value
+	}
+	end := strconv.Itoa(location.Line) + "@" + strings.ToLower(location.Side)
+	if location.StartLine == 0 {
+		return value + ":" + end
+	}
+	start := strconv.Itoa(location.StartLine) + "@" + strings.ToLower(location.StartSide)
+	return value + ":" + start + "-" + end
+}
+
+func cleanNoteOneLine(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value)
+}
+
+func cleanNoteText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value)
+}

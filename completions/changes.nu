@@ -7,6 +7,7 @@ export extern "changes" [
   --interval: string # Watch interval
   --layout: string@"__changes_completion_values_2" # Diff layout
   --no-calls # Skip call analysis
+  --no-notes # Skip diff notes
   --no-symbols # Skip symbol analysis
   --recursive(-r) # Read all workspace repositories
   --root: string # Workspace scan root
@@ -50,6 +51,41 @@ export extern "changes generate" [
   ...args: string@"__changes_completion_none"
 ]
 
+export extern "changes note" [
+  ...args: string@"__changes_completion_none"
+]
+
+export extern "changes note add" [
+  --author: string # Note author
+  --commit: string@"__changes_completion_values_11" # First-parent commit comparison
+  --config: string # YAML configuration file
+  --file: string@"__changes_completion_values_12" # Repository file to annotate
+  --from: string@"__changes_completion_values_13" # Left revision
+  --json # Print the created note as JSON
+  --line: string # Last line of the note range
+  --message: string # Summary and optional rationale
+  --message-file: string # Read note text from a file or standard input
+  --origin: string@"__changes_completion_values_14" # Author kind
+  --provider: string@"__changes_completion_values_15" # Writable note provider
+  --session: string # Harness session identifier
+  --side: string@"__changes_completion_values_16" # Diff side
+  --staged # Compare the index
+  --start-line: string # First line of a multi-line range
+  --to: string@"__changes_completion_values_17" # Right revision
+  ...args: string@"__changes_completion_none"
+]
+
+export extern "changes note list" [
+  --commit: string@"__changes_completion_values_18" # First-parent commit comparison
+  --config: string # YAML configuration file
+  --from: string@"__changes_completion_values_19" # Left revision
+  --json # Print JSON
+  --provider: string@"__changes_completion_values_20" # Note provider
+  --staged # Compare the index
+  --to: string@"__changes_completion_values_21" # Right revision
+  ...args: string@"__changes_completion_none"
+]
+
 export extern "changes provider" [
   ...args: string@"__changes_completion_none"
 ]
@@ -57,13 +93,13 @@ export extern "changes provider" [
 export extern "changes provider list" [
   --config: string # YAML configuration file
   --json # Print JSON
-  ...args: string@"__changes_completion_values_11"
+  ...args: string@"__changes_completion_values_22"
 ]
 
 export extern "changes provider validate" [
   --config: string # YAML configuration file
   --json # Print JSON
-  ...args: string@"__changes_completion_values_12"
+  ...args: string@"__changes_completion_values_23"
 ]
 
 def "__changes_completion_none" [] { [] }
@@ -96,6 +132,7 @@ def "__changes_completion_values_3" [context?: string] {
     "difftool"
     "render"
     "generate"
+    "note"
     "provider"
     (try { run-external "changes" "__values" "repository" | lines } catch { [] })
   ] | flatten | uniq
@@ -153,12 +190,80 @@ def "__changes_completion_values_10" [context?: string] {
 
 def "__changes_completion_values_11" [context?: string] {
   [
-    (try { run-external "changes" "__values" "providers" | lines } catch { [] })
+    (try { run-external "changes" "__values" "repository" | lines } catch { [] })
   ] | flatten | uniq
 }
 
 def "__changes_completion_values_12" [context?: string] {
   [
-    (try { run-external "changes" "__values" "providers" | lines } catch { [] })
+    (try { run-external "changes" "__values" "paths" | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_13" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "repository" | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_14" [context?: string] {
+  [
+    "agent"
+    "user"
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_15" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "note-writers" ($context | default "") | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_16" [context?: string] {
+  [
+    "left"
+    "right"
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_17" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "repository" | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_18" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "repository" | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_19" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "repository" | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_20" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "note-readers" ($context | default "") | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_21" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "repository" | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_22" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "providers" ($context | default "") | lines } catch { [] })
+  ] | flatten | uniq
+}
+
+def "__changes_completion_values_23" [context?: string] {
+  [
+    (try { run-external "changes" "__values" "providers" ($context | default "") | lines } catch { [] })
   ] | flatten | uniq
 }

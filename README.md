@@ -5,7 +5,8 @@
 ![Changes animated diff review](docs/changes.gif)
 
 `changes` reads Git changes as a repository tree. It groups edits under
-symbols and annotates them with changed call edges.
+symbols, annotates changed call edges, and places provider-backed notes above
+the diff.
 
 The core depends only on Git. Optional analysis and display tools run through
 external command contracts. The `extras/` directory owns every reference
@@ -21,7 +22,13 @@ Install the provider-free core, then add only the providers you use:
 nix profile install github:roshbhatia/changes#changes
 nix profile install github:roshbhatia/changes#provider-ast-grep
 nix profile install github:roshbhatia/changes#provider-calldiff
+nix profile install github:roshbhatia/changes#provider-local-notes
+nix profile install github:roshbhatia/changes#provider-github-pr
 ```
+
+Each provider package exposes only its `changes-provider-*` adapter and
+manifest. Its runtime tools stay private to the adapter, so these packages do
+not replace profile commands such as `git` or `gh`.
 
 Install core and every reference provider as one self-contained package:
 
@@ -55,7 +62,11 @@ git -c diff.tool=changes \
 
 See [`examples/workspace-review`](examples/workspace-review/README.md) and
 [`examples/custom-difftool`](examples/custom-difftool/README.md) for complete
-workflows. Provider authors can use
+workflows. Note workflows cover
+[`harness-authored notes`](examples/harness-notes/README.md),
+[`post-hoc agent review`](examples/agent-review-notes/README.md),
+[`GitHub PR review`](examples/github-pr-notes/README.md), and
+[`manual notes`](examples/manual-notes/README.md). Provider authors can use
 [`examples/provider-validation`](examples/provider-validation/README.md).
 
 ## Configure it
@@ -72,6 +83,9 @@ diff:
   layout: unified
   filter: [delta, --paging=never]
   difftool: [difft, --color, always, --display, side-by-side, $LOCAL, $REMOTE]
+notes:
+  editor: [nvim, $FILE]
+  refreshInterval: 30s
 providers:
   cacheMaxEntries: 256
   cacheTtl: 1h
@@ -102,7 +116,9 @@ configuration directory.
 Each provider uses the shared `provider/v1` manifest. Actions add arguments and
 environment values through Go templates. Changes executes the resulting argv
 directly and never inserts a shell. The core only knows the semantic actions
-`changes.symbols` and `changes.calls`.
+`changes.symbols`, `changes.calls`, `changes.notes`, and
+`changes.notes.create`. Note reads and writes are never cached. Watch mode
+polls note providers at `notes.refreshInterval`, independent of file polling.
 
 Provider results expire after `providers.cacheTtl`. Changes keeps at most
 `providers.cacheMaxEntries` persistent results. Set either value to zero to
@@ -122,8 +138,8 @@ changes provider validate provider-name
 ```
 
 Validation checks each manifest and host dependency. It then creates a
-temporary repository, runs every advertised Changes action, and checks the
-returned symbol or call data.
+temporary repository, runs every advertised Changes action, and checks its
+semantic output. A writable note provider writes only inside this fixture.
 
 Generate the schema and command reference with `changes generate`. CI uses
 `changes generate --check` to reject stale output.
@@ -133,9 +149,9 @@ Generate the schema and command reference with `changes generate`. CI uses
 
 ### `changes`
 
-Render Git changes with symbol and call analysis
+Render Git changes with symbol, call, and note context
 
-Refs follow git diff: none is HEAD against the working tree, one is that ref
+Refs follow git diff: none is the index against the working tree, one is that ref
 against the working tree, and two compare the trees. A from of the form a..b is
 split into two refs.
 
@@ -154,6 +170,7 @@ name.
 | `--interval` `<value>` | Watch interval |
 | `--layout` `<value>` | Diff layout |
 | `--no-calls` | Skip call analysis |
+| `--no-notes` | Skip diff notes |
 | `--no-symbols` | Skip symbol analysis |
 | `--recursive`, `-r` | Read all workspace repositories |
 | `--root` `<value>` | Workspace scan root |
@@ -202,9 +219,50 @@ Generate README command docs and JSON Schema
 | --- | --- |
 | `--check` | Fail when generated files are stale |
 
+### `changes note`
+
+Create and inspect diff notes
+
+### `changes note add`
+
+Create a note on the selected diff
+
+| Option | Description |
+| --- | --- |
+| `--author` `<value>` | Note author |
+| `--commit` `<value>` | First-parent commit comparison |
+| `--config` `<value>` | YAML configuration file |
+| `--file` `<value>` | Repository file to annotate |
+| `--from` `<value>` | Left revision |
+| `--json` | Print the created note as JSON |
+| `--line` `<value>` | Last line of the note range |
+| `--message` `<value>` | Summary and optional rationale |
+| `--message-file` `<value>` | Read note text from a file or standard input |
+| `--origin` `<value>` | Author kind |
+| `--provider` `<value>` | Writable note provider |
+| `--session` `<value>` | Harness session identifier |
+| `--side` `<value>` | Diff side |
+| `--staged` | Compare the index |
+| `--start-line` `<value>` | First line of a multi-line range |
+| `--to` `<value>` | Right revision |
+
+### `changes note list`
+
+List notes on the selected diff
+
+| Option | Description |
+| --- | --- |
+| `--commit` `<value>` | First-parent commit comparison |
+| `--config` `<value>` | YAML configuration file |
+| `--from` `<value>` | Left revision |
+| `--json` | Print JSON |
+| `--provider` `<value>` | Note provider |
+| `--staged` | Compare the index |
+| `--to` `<value>` | Right revision |
+
 ### `changes provider`
 
-Inspect and validate analysis providers
+Inspect and validate context providers
 
 ### `changes provider list`
 

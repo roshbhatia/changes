@@ -108,6 +108,9 @@ func TestCompletionMetadataIncludesContextualArguments(t *testing.T) {
 			command = subcommandMetadata(want.path...)
 		}
 		expected := []string{"changes", "__values", want.kind}
+		if len(want.path) > 0 && want.path[0] == "provider" {
+			expected = append(expected, completion.ContextPlaceholder)
+		}
 		if !slices.Equal(command.CompletionCommand, expected) {
 			t.Fatalf("%v completion = %#v, want %#v", want.path, command.CompletionCommand, expected)
 		}
@@ -122,6 +125,70 @@ func TestCompletionMetadataIncludesContextualArguments(t *testing.T) {
 				t.Fatalf("%s completion lacks %q", shell, kind)
 			}
 		}
+	}
+	for _, test := range []struct {
+		path []string
+		kind string
+	}{
+		{path: []string{"note", "add"}, kind: "note-writers"},
+		{path: []string{"note", "list"}, kind: "note-readers"},
+	} {
+		command := subcommandMetadata(test.path...)
+		for _, flag := range command.Flags {
+			if flag.Name == "provider" {
+				want := []string{"changes", "__values", test.kind, completion.ContextPlaceholder}
+				if !slices.Equal(flag.CompletionCommand, want) {
+					t.Fatalf("%v provider completion = %#v, want %#v", test.path, flag.CompletionCommand, want)
+				}
+			}
+		}
+	}
+}
+
+func TestSplitCompletionContextPreservesQuotedConfigPath(t *testing.T) {
+	context := `changes note add --config "/tmp/config folder/changes.yaml" --provider `
+	arguments := splitCompletionContext(context)
+	if got := argumentValue(arguments, "config"); got != "/tmp/config folder/changes.yaml" {
+		t.Fatalf("config path = %q; arguments = %#v", got, arguments)
+	}
+}
+
+func TestWatchRejectsNonpositiveInterval(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "old\n"})
+	command := exec.Command(os.Args[0], "-test.run=TestMainHelperProcess", "--",
+		"--watch", "--interval=0", "--no-notes")
+	command.Dir = repository
+	command.Env = append(os.Environ(),
+		"GO_WANT_MAIN_HELPER=1",
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"XDG_DATA_HOME="+t.TempDir(),
+		"XDG_DATA_DIRS="+t.TempDir(),
+	)
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "--interval must be greater than zero") {
+		t.Fatalf("error = %v, output = %s", err, output)
+	}
+}
+
+func TestNoteRefreshUsesItsOwnInterval(t *testing.T) {
+	last := time.Unix(100, 0)
+	if noteRefreshDue(false, last, last, 30*time.Second) {
+		t.Fatal("disabled notes requested a refresh")
+	}
+	if noteRefreshDue(true, last, last.Add(29*time.Second), 30*time.Second) {
+		t.Fatal("notes refreshed before their interval")
+	}
+	if !noteRefreshDue(true, last, last.Add(30*time.Second), 30*time.Second) {
+		t.Fatal("notes did not refresh at their interval")
+	}
+}
+
+func TestStaleNoteSummaryLabelsPreviousComparison(t *testing.T) {
+	got := staleNoteSummary("notes\nmain.go:1@right\n  keep this")
+	if !strings.Contains(got, "previous comparison; refresh pending") ||
+		!strings.Contains(got, "main.go:1@right") || strings.HasPrefix(got, "notes\n") {
+		t.Fatalf("stale note summary = %q", got)
 	}
 }
 
@@ -209,6 +276,33 @@ func TestRestorePathSeparatorKeepsRefLikePaths(t *testing.T) {
 
 func TestQuotedPathStaysEscapedWhileProviderReceivesRawIdentity(t *testing.T) {
 	directory := t.TempDir()
+	name := "space and\nnewline.go"
+	if err := os.WriteFile(filepath.Join(directory, name), []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{
+		{"init", "--quiet"},
+		{"config", "user.name", "Changes test"},
+		{"config", "user.email", "changes@example.invalid"},
+		{"add", "."},
+		{"commit", "--quiet", "-m", "before"},
+	} {
+		command := exec.Command("git", arguments...)
+		command.Dir = directory
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(directory, name), []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"add", "."}, {"commit", "--quiet", "-m", "after"}} {
+		command := exec.Command("git", arguments...)
+		command.Dir = directory
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
 	capture := filepath.Join(t.TempDir(), "request.json")
 	script := filepath.Join(t.TempDir(), "provider")
 	program := `#!/bin/sh
@@ -234,7 +328,7 @@ printf '%s\n' '{"version":"changes.provider/v1","symbols":{"space and\nnewline.g
 		"+++ \"b/space and\\nnewline.go\"\n" +
 		"@@ -1 +1 @@\n-old\n+new\n"
 	view := renderer{
-		specs: []source.Spec{{Dir: directory}}, syms: true, budget: 5 * time.Second,
+		specs: []source.Spec{{Dir: directory, From: "HEAD~1", To: "HEAD"}}, syms: true, budget: 5 * time.Second,
 		providers: []provider.LoadedManifest{{Manifest: configured}}, width: 100,
 	}
 	options := view.diffOptions([]string{patch}, true)
@@ -255,6 +349,9 @@ printf '%s\n' '{"version":"changes.provider/v1","symbols":{"space and\nnewline.g
 	if !slices.Equal(request.Files, []string{"space and\nnewline.go"}) {
 		t.Fatalf("provider paths = %#v", request.Files)
 	}
+	if request.Base != "" || request.Head != "" || request.Validation {
+		t.Fatalf("legacy symbol request gained note fields: %+v", request)
+	}
 }
 
 func TestCompletionsKeepNestedProviderContext(t *testing.T) {
@@ -269,7 +366,7 @@ func TestCompletionsKeepNestedProviderContext(t *testing.T) {
 			"printf '%s\\n' 'list' 'validate'",
 		}},
 		{"zsh", []string{
-			"values=( 'completion' 'difftool' 'render' 'generate' 'provider')",
+			"values=( 'completion' 'difftool' 'render' 'generate' 'note' 'provider')",
 			"'*:argument:__changes_completion_values_3'",
 			"'2:command:(list validate)'",
 		}},
@@ -304,6 +401,9 @@ func TestCommandMetadataIncludesEveryDispatchedCommand(t *testing.T) {
 		{"completion"},
 		{"difftool"},
 		{"generate"},
+		{"note"},
+		{"note", "add"},
+		{"note", "list"},
 		{"provider"},
 		{"provider", "list"},
 		{"provider", "validate"},

@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=../../schema/provider.schema.json
+version: provider/v1
+name: local-notes
+description: Read and write local diff notes in the shared XDG state record
+command: [changes-provider-local-notes]
+actions:
+  changes.notes:
+    description: Read local notes for the comparison
+  changes.notes.create:
+    description: Create a local note for the comparison
+defaults:
+  timeout: 2s
+  priority: 80

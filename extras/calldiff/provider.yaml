@@ -6,8 +6,6 @@ command: [changes-provider-calldiff]
 actions:
   changes.calls:
     description: Find call edges added or removed by the comparison
-requires:
-  commands: [calldiff, git]
 defaults:
   timeout: 20s
   priority: 90

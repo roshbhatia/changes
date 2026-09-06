@@ -6,12 +6,19 @@ Each provider directory owns four parts: its manifest, adapter program,
 runtime dependency package, and validation contract. The root flake discovers
 directories that contain `package.nix`. It exports each one as
 `provider-<name>` without adding it to the default package closure, and creates
-an isolated check for every discovered package.
+an isolated check for every discovered package. A package wraps its runtime
+tools into the adapter path. It does not expose those tools as profile commands.
 
 - `ast-grep/provider.yaml` advertises `changes.symbols` and runs
   `changes-provider-ast-grep`.
 - `calldiff/provider.yaml` advertises `changes.calls` and runs
   `changes-provider-calldiff`.
+- `local-notes/provider.yaml` advertises `changes.notes` and
+  `changes.notes.create`. It shares the existing XDG diff-note record used by
+  the sysinit Neovim integration.
+- `github-pr/provider.yaml` advertises `changes.notes`. It reads pull request
+  review threads through the authenticated `gh` command and never changes the
+  pull request.
 
 Each adapter reads one JSON request from standard input and writes one JSON
 response. The manifest follows `provider/v1`, which Changes validates against
@@ -26,3 +33,4 @@ package. Changes core does not contain an ast-grep or calldiff integration.
 
 Run `changes provider validate` to exercise every configured provider against
 a synthetic working tree. This does not read or change the current repository.
+The GitHub provider returns a synthetic validation note without network access.

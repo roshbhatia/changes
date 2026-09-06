@@ -63,6 +63,21 @@ func TestSupportsAdvertisedAction(t *testing.T) {
 	}
 }
 
+func TestCleanDiagnosticRemovesTerminalControls(t *testing.T) {
+	got := cleanDiagnostic("failed\x1b]8;;https://example.test\a link\x1b]8;;\a\nnext")
+	if strings.ContainsAny(got, "\x1b\a\n\r") || !strings.Contains(got, "failed") || !strings.Contains(got, "next") {
+		t.Fatalf("clean diagnostic = %q", got)
+	}
+}
+
+func TestCappedBufferBoundsProviderOutput(t *testing.T) {
+	buffer := cappedBuffer{limit: 4}
+	written, err := buffer.Write([]byte("123456"))
+	if err != nil || written != 6 || buffer.String() != "1234" || !buffer.exceeded {
+		t.Fatalf("buffer = %q, %d, %v, exceeded=%v", buffer.String(), written, err, buffer.exceeded)
+	}
+}
+
 func TestResultPathIncludesManifestActionAndRequest(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	configured := manifest("symbols", ActionSymbols, []string{os.Args[0]})
@@ -240,6 +255,29 @@ JSON
 		Manifest: configured,
 		Path:     filepath.Join(manifestDirectory, "provider.yaml"),
 	})
+	if !result.OK() {
+		t.Fatalf("validation = %+v", result)
+	}
+}
+
+func TestValidateKeepsLegacyActionRequestShape(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `payload=$(cat)
+case "$payload" in
+  *'"base"'*|*'"head"'*|*'"note"'*|*'"validation"'*)
+    printf '%s\n' 'unexpected note field in legacy request' >&2
+    exit 1
+    ;;
+esac
+cat <<'JSON'
+{"version":"changes.provider/v1","symbols":{"main.ts":[{"kind":"function","name":"ready","from":3,"to":3}]}}
+JSON
+`
+	configured := manifest("symbols", ActionSymbols, []string{shell, "-c", script})
+	result := Validate(context.Background(), LoadedManifest{Manifest: configured})
 	if !result.OK() {
 		t.Fatalf("validation = %+v", result)
 	}
@@ -498,6 +536,47 @@ printf '%s\n' '{"version":"changes.provider/v1","symbols":{}}'
 	}
 }
 
+func TestReadResultRejectsSymbolicLink(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	target := filepath.Join(cache, "target", "target.json")
+	response := Response{Version: ProtocolVersion}
+	if err := writeResult(target, response, time.Hour, 10); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(cache, "changes", "providers")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(directory, "result.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readResult(link, time.Hour); ok {
+		t.Fatal("symbolic-link cache entry was accepted")
+	}
+}
+
+func TestWriteResultRejectsSymbolicLinkDirectory(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(cache, "changes")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cache, "changes", "providers", "result.json")
+	if err := writeResult(path, Response{Version: ProtocolVersion}, time.Hour, 10); err == nil {
+		t.Fatal("symbolic-link cache directory was accepted")
+	}
+	entries, err := os.ReadDir(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("external cache directory changed: %+v", entries)
+	}
+}
+
 func TestRunBoundsPersistentCacheEntries(t *testing.T) {
 	shell, err := exec.LookPath("sh")
 	if err != nil {
@@ -588,7 +667,7 @@ func TestValidateRejectsProviderWithoutChangesAction(t *testing.T) {
 	}
 	configured := manifest("foreign", "unrelated.query", []string{shell, "-c", "exit 0"})
 	result := Validate(context.Background(), LoadedManifest{Manifest: configured, Path: "test.yaml"})
-	if result.OK() || !strings.Contains(result.Checks[len(result.Checks)-1].Message, ActionSymbols) {
+	if result.OK() || !strings.Contains(result.Checks[len(result.Checks)-1].Message, "supported Changes action") {
 		t.Fatalf("validation = %+v", result)
 	}
 }

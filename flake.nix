@@ -57,7 +57,7 @@
               pname = name;
               inherit version;
               src = ./.;
-              vendorHash = "sha256-esvMy+HH2OGA0cHYqB6OFt5Uacen/1N4o4UtTAgE8TA=";
+              vendorHash = "sha256-QrWulqo8m84BxwdDgGr31JyyfRkHsHZeLXCbbvnZKnU=";
               subPackages = [ subPackage ];
               nativeBuildInputs = [ pkgs.makeWrapper ] ++ pkgs.lib.optional completions pkgs.installShellFiles;
               nativeCheckInputs = [ pkgs.git ];
@@ -125,7 +125,7 @@
             in
             pkgs.symlinkJoin {
               name = "changes-provider-${name}-${version}";
-              paths = [ adapter ] ++ runtimeInputs;
+              paths = [ adapter ];
               passthru = {
                 inherit adapter;
                 providerRuntimeInputs = runtimeInputs;
@@ -235,6 +235,10 @@
             ${pkgs.lib.getExe packages.default} provider validate
             touch "$out"
           '';
+          providerProfileComposition = pkgs.buildEnv {
+            name = "changes-provider-profile-composition";
+            paths = [ packages.default ] ++ map (name: packages."provider-${name}") providerNames;
+          };
           dashPrefixedPaths =
             pkgs.runCommand "changes-dash-prefixed-paths"
               {
@@ -282,6 +286,17 @@
           dash-prefixed-paths = dashPrefixedPaths;
           provider-aggregate-boundary = providerAggregateBoundary;
           provider-aggregate-validation = providerAggregateValidation;
+          provider-profile-composition = pkgs.runCommand "changes-provider-profile-composition-check" { } ''
+            test -x ${providerProfileComposition}/bin/changes
+            ${pkgs.lib.concatMapStringsSep "\n" (name: ''
+              test -x ${providerProfileComposition}/bin/changes-provider-${name}
+            '') providerNames}
+            test ! -e ${providerProfileComposition}/bin/git
+            test ! -e ${providerProfileComposition}/bin/gh
+            test ! -e ${providerProfileComposition}/bin/ast-grep
+            test ! -e ${providerProfileComposition}/bin/calldiff
+            touch "$out"
+          '';
           provider-boundary =
             pkgs.runCommand "changes-provider-boundary"
               {

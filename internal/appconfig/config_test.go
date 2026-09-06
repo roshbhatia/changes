@@ -29,6 +29,9 @@ providers:
   cacheTtl: 30m
   directory: /tmp/providers
   timeout: 15s
+notes:
+  editor: [nvim, --clean, $FILE]
+  refreshInterval: 12s
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
@@ -49,6 +52,10 @@ providers:
 	if configured.Providers.CacheMaxEntries != 32 || configured.Providers.CacheTTL.Duration() != 45*time.Minute {
 		t.Fatalf("loaded cache config = %+v", configured.Providers)
 	}
+	if len(configured.Notes.Editor) != 3 || configured.Notes.Editor[0] != "nvim" ||
+		configured.Notes.RefreshInterval.Duration() != 12*time.Second {
+		t.Fatalf("loaded note editor = %+v", configured.Notes.Editor)
+	}
 }
 
 func TestSchemaIncludesProviders(t *testing.T) {
@@ -57,7 +64,7 @@ func TestSchemaIncludesProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`"$schema"`, `"providers"`, `"cacheMaxEntries"`, `"cacheTtl"`, `"directory"`, `"filter"`, `"difftool"`,
+		`"$schema"`, `"providers"`, `"cacheMaxEntries"`, `"cacheTtl"`, `"directory"`, `"filter"`, `"difftool"`, `"notes"`, `"editor"`, `"refreshInterval"`,
 	} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("schema omits %s", want)

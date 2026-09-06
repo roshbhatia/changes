@@ -16,7 +16,7 @@ __changes_completion_values_2() {
 }
 __changes_completion_values_3() {
   local -a values
-  values=( 'completion' 'difftool' 'render' 'generate' 'provider')
+  values=( 'completion' 'difftool' 'render' 'generate' 'note' 'provider')
   values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
   compadd -a values
 }
@@ -59,13 +59,77 @@ __changes_completion_values_10() {
 __changes_completion_values_11() {
   local -a values
   values=()
-  values+=("${(@f)$('changes' '__values' 'providers' 2>/dev/null)}")
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
   compadd -a values
 }
 __changes_completion_values_12() {
   local -a values
   values=()
-  values+=("${(@f)$('changes' '__values' 'providers' 2>/dev/null)}")
+  values+=("${(@f)$('changes' '__values' 'paths' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_13() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_14() {
+  local -a values
+  values=( 'agent' 'user')
+  compadd -a values
+}
+__changes_completion_values_15() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'note-writers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_16() {
+  local -a values
+  values=( 'left' 'right')
+  compadd -a values
+}
+__changes_completion_values_17() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_18() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_19() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_20() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'note-readers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_21() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_22() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'providers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_23() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'providers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
   compadd -a values
 }
 
@@ -131,6 +195,44 @@ _changes() {
       'render:--layout='*) continue ;;
       'render:--width') consume_value=1; continue ;;
       'render:--width='*) continue ;;
+      'note add:--author') consume_value=1; continue ;;
+      'note add:--author='*) continue ;;
+      'note add:--commit') consume_value=1; continue ;;
+      'note add:--commit='*) continue ;;
+      'note add:--config') consume_value=1; continue ;;
+      'note add:--config='*) continue ;;
+      'note add:--file') consume_value=1; continue ;;
+      'note add:--file='*) continue ;;
+      'note add:--from') consume_value=1; continue ;;
+      'note add:--from='*) continue ;;
+      'note add:--line') consume_value=1; continue ;;
+      'note add:--line='*) continue ;;
+      'note add:--message') consume_value=1; continue ;;
+      'note add:--message='*) continue ;;
+      'note add:--message-file') consume_value=1; continue ;;
+      'note add:--message-file='*) continue ;;
+      'note add:--origin') consume_value=1; continue ;;
+      'note add:--origin='*) continue ;;
+      'note add:--provider') consume_value=1; continue ;;
+      'note add:--provider='*) continue ;;
+      'note add:--session') consume_value=1; continue ;;
+      'note add:--session='*) continue ;;
+      'note add:--side') consume_value=1; continue ;;
+      'note add:--side='*) continue ;;
+      'note add:--start-line') consume_value=1; continue ;;
+      'note add:--start-line='*) continue ;;
+      'note add:--to') consume_value=1; continue ;;
+      'note add:--to='*) continue ;;
+      'note list:--commit') consume_value=1; continue ;;
+      'note list:--commit='*) continue ;;
+      'note list:--config') consume_value=1; continue ;;
+      'note list:--config='*) continue ;;
+      'note list:--from') consume_value=1; continue ;;
+      'note list:--from='*) continue ;;
+      'note list:--provider') consume_value=1; continue ;;
+      'note list:--provider='*) continue ;;
+      'note list:--to') consume_value=1; continue ;;
+      'note list:--to='*) continue ;;
       'provider list:--config') consume_value=1; continue ;;
       'provider list:--config='*) continue ;;
       'provider validate:--config') consume_value=1; continue ;;
@@ -141,6 +243,9 @@ _changes() {
       ':difftool') context='difftool' ;;
       ':render') context='render' ;;
       ':generate') context='generate' ;;
+      ':note') context='note' ;;
+      'note:add') context='note add' ;;
+      'note:list') context='note list' ;;
       ':provider') context='provider' ;;
       'provider:list') context='provider list' ;;
       'provider:validate') context='provider validate' ;;
@@ -157,6 +262,7 @@ _changes() {
         '--interval[Watch interval]:value:' \
         '--layout[Diff layout]:value:__changes_completion_values_2' \
         '--no-calls[Skip call analysis]' \
+        '--no-notes[Skip diff notes]' \
         '--no-symbols[Skip symbol analysis]' \
         '(-r)--recursive[Read all workspace repositories]' \
         '--root[Workspace scan root]:value:' \
@@ -201,6 +307,44 @@ _changes() {
         '*:argument:'
 
       ;;
+    'note')
+      _arguments \
+        '2:command:(add list)'
+
+      ;;
+    'note add')
+      _arguments \
+        '--author[Note author]:value:' \
+        '--commit[First-parent commit comparison]:value:__changes_completion_values_11' \
+        '--config[YAML configuration file]:value:' \
+        '--file[Repository file to annotate]:value:__changes_completion_values_12' \
+        '--from[Left revision]:value:__changes_completion_values_13' \
+        '--json[Print the created note as JSON]' \
+        '--line[Last line of the note range]:value:' \
+        '--message[Summary and optional rationale]:value:' \
+        '--message-file[Read note text from a file or standard input]:value:' \
+        '--origin[Author kind]:value:__changes_completion_values_14' \
+        '--provider[Writable note provider]:value:__changes_completion_values_15' \
+        '--session[Harness session identifier]:value:' \
+        '--side[Diff side]:value:__changes_completion_values_16' \
+        '--staged[Compare the index]' \
+        '--start-line[First line of a multi-line range]:value:' \
+        '--to[Right revision]:value:__changes_completion_values_17' \
+        '*:argument:'
+
+      ;;
+    'note list')
+      _arguments \
+        '--commit[First-parent commit comparison]:value:__changes_completion_values_18' \
+        '--config[YAML configuration file]:value:' \
+        '--from[Left revision]:value:__changes_completion_values_19' \
+        '--json[Print JSON]' \
+        '--provider[Note provider]:value:__changes_completion_values_20' \
+        '--staged[Compare the index]' \
+        '--to[Right revision]:value:__changes_completion_values_21' \
+        '*:argument:'
+
+      ;;
     'provider')
       _arguments \
         '2:command:(list validate)'
@@ -210,14 +354,14 @@ _changes() {
       _arguments \
         '--config[YAML configuration file]:value:' \
         '--json[Print JSON]' \
-        '*:argument:__changes_completion_values_11'
+        '*:argument:__changes_completion_values_22'
 
       ;;
     'provider validate')
       _arguments \
         '--config[YAML configuration file]:value:' \
         '--json[Print JSON]' \
-        '*:argument:__changes_completion_values_12'
+        '*:argument:__changes_completion_values_23'
 
       ;;
   esac

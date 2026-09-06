@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/roshbhatia/changes/internal/source"
 	"github.com/roshbhatia/go-utils/diffview"
@@ -22,11 +23,14 @@ import (
 )
 
 const (
-	ProtocolVersion = "changes.provider/v1"
-	ActionCalls     = "changes.calls"
-	ActionSymbols   = "changes.symbols"
+	ProtocolVersion   = "changes.provider/v1"
+	ActionCalls       = "changes.calls"
+	ActionNotes       = "changes.notes"
+	ActionNotesCreate = "changes.notes.create"
+	ActionSymbols     = "changes.symbols"
 
 	maxProviderCacheEntryBytes = 4 << 20
+	maxProviderOutputBytes     = 16 << 20
 )
 
 // Manifest is the shared provider/v1 manifest.
@@ -60,20 +64,25 @@ func Schema() ([]byte, error) { return providerlib.Schema() }
 
 // Request describes one repository comparison without naming an implementation.
 type Request struct {
-	Version     string   `json:"version"`
-	Action      string   `json:"action"`
-	Directory   string   `json:"directory"`
-	Files       []string `json:"files"`
-	From        string   `json:"from,omitempty"`
-	Fingerprint string   `json:"fingerprint"`
-	Staged      bool     `json:"staged,omitempty"`
-	To          string   `json:"to,omitempty"`
+	Version     string     `json:"version"`
+	Action      string     `json:"action"`
+	Base        string     `json:"base,omitempty"`
+	Directory   string     `json:"directory"`
+	Files       []string   `json:"files"`
+	From        string     `json:"from,omitempty"`
+	Fingerprint string     `json:"fingerprint"`
+	Head        string     `json:"head,omitempty"`
+	Note        *NoteDraft `json:"note,omitempty"`
+	Staged      bool       `json:"staged,omitempty"`
+	To          string     `json:"to,omitempty"`
+	Validation  bool       `json:"validation,omitempty"`
 }
 
 // Response carries analysis layers produced by a provider.
 type Response struct {
 	Version string                       `json:"version"`
 	Edges   map[string][]diffview.Edge   `json:"edges,omitempty"`
+	Notes   []Note                       `json:"notes,omitempty"`
 	Symbols map[string][]diffview.Symbol `json:"symbols,omitempty"`
 }
 
@@ -332,7 +341,8 @@ func Run(
 		return Response{}, err
 	}
 	cachePath, cacheErr := resultPath(prepared, action, payload)
-	if cacheErr == nil && cache.TTL > 0 && cache.MaxEntries > 0 {
+	cacheable := action == ActionSymbols || action == ActionCalls
+	if cacheable && cacheErr == nil && cache.TTL > 0 && cache.MaxEntries > 0 {
 		pruneResults(filepath.Dir(cachePath), cache.TTL, cache.MaxEntries)
 		if response, ok := readResult(cachePath, cache.TTL); ok {
 			return response, nil
@@ -342,13 +352,46 @@ func Run(
 	if err != nil {
 		return Response{}, err
 	}
-	if cacheErr == nil && cache.TTL > 0 && cache.MaxEntries > 0 {
+	qualifyNoteIDs(manifest.Name, &response)
+	if err := validateProviderResponse(manifest.Name, action, response); err != nil {
+		return Response{}, fmt.Errorf("provider %s returned invalid %s response: %w", manifest.Name, action, err)
+	}
+	if err := validateResponseComparison(request, response); err != nil {
+		return Response{}, fmt.Errorf("provider %s returned invalid %s response: %w", manifest.Name, action, err)
+	}
+	if err := validateCreateResponse(request, response); err != nil {
+		return Response{}, fmt.Errorf("provider %s returned invalid %s response: %w", manifest.Name, action, err)
+	}
+	if cacheable && cacheErr == nil && cache.TTL > 0 && cache.MaxEntries > 0 {
 		_ = writeResult(cachePath, response, cache.TTL, cache.MaxEntries)
 	}
 	return response, nil
 }
 
+func qualifyNoteIDs(name string, response *Response) {
+	prefix := name + ":"
+	for index := range response.Notes {
+		note := &response.Notes[index]
+		if note.ID != "" && !strings.HasPrefix(note.ID, prefix) {
+			note.ID = prefix + note.ID
+		}
+		if note.ThreadID != "" && !strings.HasPrefix(note.ThreadID, prefix) {
+			note.ThreadID = prefix + note.ThreadID
+		}
+		if note.ReplyTo != "" && !strings.HasPrefix(note.ReplyTo, prefix) {
+			note.ReplyTo = prefix + note.ReplyTo
+		}
+	}
+}
+
 func prepareRequest(request Request, action string) (Request, []byte, error) {
+	if action == ActionNotesCreate {
+		if err := validateNoteDraft(request.Note); err != nil {
+			return Request{}, nil, err
+		}
+	} else if request.Note != nil {
+		return Request{}, nil, fmt.Errorf("request note is only valid for %s", ActionNotesCreate)
+	}
 	request.Version = ProtocolVersion
 	request.Action = action
 	payload, err := json.Marshal(request)
@@ -420,11 +463,16 @@ func execute(ctx context.Context, prepared preparedExecution, payload []byte) (R
 	command.Dir = prepared.workingDirectory
 	command.Env = prepared.environment
 	command.Stdin = bytes.NewReader(payload)
-	var stdout, stderr bytes.Buffer
+	stdout := cappedBuffer{limit: maxProviderOutputBytes}
+	stderr := cappedBuffer{limit: maxProviderOutputBytes}
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
-		message := strings.TrimSpace(stderr.String())
+	runErr := command.Run()
+	if stdout.exceeded || stderr.exceeded {
+		return Response{}, fmt.Errorf("provider %s output exceeds %d bytes", manifest.Name, maxProviderOutputBytes)
+	}
+	if runErr != nil {
+		message := cleanDiagnostic(stderr.String())
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return Response{}, fmt.Errorf("provider %s timed out: %w", manifest.Name, ctx.Err())
 		}
@@ -432,15 +480,48 @@ func execute(ctx context.Context, prepared preparedExecution, payload []byte) (R
 			return Response{}, fmt.Errorf("provider %s canceled: %w", manifest.Name, ctx.Err())
 		}
 		if message != "" {
-			return Response{}, fmt.Errorf("provider %s: %s: %w", manifest.Name, message, err)
+			return Response{}, fmt.Errorf("provider %s: %s: %w", manifest.Name, message, runErr)
 		}
-		return Response{}, fmt.Errorf("provider %s: %w", manifest.Name, err)
+		return Response{}, fmt.Errorf("provider %s: %w", manifest.Name, runErr)
 	}
 	response := Response{}
 	if err := decodeResponse(&stdout, &response); err != nil {
 		return Response{}, fmt.Errorf("provider %s returned invalid JSON: %w", manifest.Name, err)
 	}
 	return response, nil
+}
+
+type cappedBuffer struct {
+	bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (buffer *cappedBuffer) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := buffer.limit - buffer.Len()
+	if remaining > 0 {
+		if remaining > len(value) {
+			remaining = len(value)
+		}
+		_, _ = buffer.Buffer.Write(value[:remaining])
+	}
+	if remaining < len(value) {
+		buffer.exceeded = true
+	}
+	return written, nil
+}
+
+func cleanDiagnostic(value string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value))
 }
 
 func decodeResponse(reader io.Reader, response *Response) error {
@@ -501,13 +582,9 @@ func resultPath(prepared preparedExecution, action string, payload []byte) (stri
 	if len(manifest.Command) == 0 {
 		return "", errors.New("provider command is empty")
 	}
-	root := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME"))
-	if root == "" {
-		var err error
-		root, err = os.UserCacheDir()
-		if err != nil {
-			return "", err
-		}
+	root, err := providerCacheRoot()
+	if err != nil {
+		return "", err
 	}
 	commands := append([]string{prepared.plan.Argv[0]}, manifest.Requires.Commands...)
 	executables := make([]executableIdentity, 0, len(commands))
@@ -539,6 +616,48 @@ func resultPath(prepared preparedExecution, action string, payload []byte) (stri
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
 	return filepath.Join(root, "changes", "providers", digest+".json"), nil
+}
+
+func providerCacheRoot() (string, error) {
+	root := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME"))
+	if root == "" {
+		var err error
+		root, err = os.UserCacheDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Abs(root)
+}
+
+func validateCachePath(path string) error {
+	root, err := providerCacheRoot()
+	if err != nil {
+		return err
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(root, absolute)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("provider cache path must stay below its trusted root")
+	}
+	candidate := root
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		candidate = filepath.Join(candidate, component)
+		info, err := os.Lstat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("provider cache path component is a symlink: %s", candidate)
+		}
+	}
+	return nil
 }
 
 func cacheEnvironment(prepared preparedExecution) map[string]string {
@@ -599,8 +718,11 @@ type cachedResult struct {
 }
 
 func readResult(path string, ttl time.Duration) (Response, bool) {
-	info, err := os.Stat(path)
-	if err != nil || info.Size() > maxProviderCacheEntryBytes {
+	if validateCachePath(path) != nil {
+		return Response{}, false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxProviderCacheEntryBytes {
 		return Response{}, false
 	}
 	data, err := os.ReadFile(path)
@@ -625,6 +747,9 @@ func readResult(path string, ttl time.Duration) (Response, bool) {
 }
 
 func writeResult(path string, response Response, ttl time.Duration, maxEntries int) error {
+	if err := validateCachePath(path); err != nil {
+		return err
+	}
 	data, err := json.Marshal(cachedResult{CreatedAt: time.Now().UTC(), Response: response})
 	if err != nil {
 		return err
@@ -633,6 +758,9 @@ func writeResult(path string, response Response, ttl time.Duration, maxEntries i
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := validateCachePath(path); err != nil {
 		return err
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".provider-*.json")
@@ -656,6 +784,9 @@ func writeResult(path string, response Response, ttl time.Duration, maxEntries i
 }
 
 func pruneResults(directory string, ttl time.Duration, maxEntries int) {
+	if validateCachePath(directory) != nil {
+		return
+	}
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return
@@ -788,15 +919,24 @@ func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 	if !report.OK() {
 		return validation
 	}
-	request := Request{
-		Directory: directory, Files: []string{"main.ts"}, Fingerprint: "provider-validation",
-	}
+	request := Request{Directory: directory, Files: []string{"main.ts"}, Fingerprint: "provider-validation"}
 	probed := false
-	for _, action := range []string{ActionSymbols, ActionCalls} {
+	for _, action := range []string{ActionSymbols, ActionCalls, ActionNotesCreate, ActionNotes} {
 		if !Supports(manifest, action) {
 			continue
 		}
 		probed = true
+		request.Note = nil
+		request.Validation = action == ActionNotes || action == ActionNotesCreate
+		if action == ActionNotesCreate {
+			request.Note = &NoteDraft{
+				Summary: "Explain the ready change", Author: "provider-validation", Origin: NoteOriginAgent,
+				Anchor: NoteAnchor{
+					Path: "main.ts", Side: NoteSideRight, Line: 2, Context: "return ready()",
+					Fingerprint: request.Fingerprint, Target: NoteTargetWorking,
+				},
+			}
+		}
 		prepared, payload, err := prepareRequest(request, action)
 		if err == nil {
 			var response Response
@@ -805,6 +945,15 @@ func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 				err = prepareErr
 			} else {
 				response, err = execute(ctx, execution, payload)
+			}
+			if err == nil {
+				err = validateProviderResponse(manifest.Name, action, response)
+			}
+			if err == nil {
+				err = validateResponseComparison(prepared, response)
+			}
+			if err == nil {
+				err = validateCreateResponse(prepared, response)
 			}
 			if err == nil {
 				err = validateSemantics(action, response)
@@ -819,7 +968,7 @@ func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 	}
 	if !probed {
 		validation.Checks = append(validation.Checks, failedCheck(
-			"action", manifest.Name, errors.New("provider does not advertise changes.symbols or changes.calls"),
+			"action", manifest.Name, errors.New("provider does not advertise a supported Changes action"),
 		))
 	}
 	return validation
@@ -853,8 +1002,96 @@ func validateSemantics(action string, response Response) error {
 		if len(response.Edges["main.ts"]) == 0 {
 			return errors.New("response did not identify the changed call in main.ts")
 		}
+	case ActionNotesCreate:
+		if len(response.Notes) != 1 || response.Notes[0].Anchor.Path != "main.ts" {
+			return errors.New("response did not create the validation note in main.ts")
+		}
+	case ActionNotes:
+		for _, note := range response.Notes {
+			if note.Anchor.Path == "main.ts" && strings.Contains(note.Summary, "ready") {
+				return nil
+			}
+		}
+		return errors.New("response did not identify the validation note in main.ts")
 	}
 	return nil
+}
+
+func validateProviderResponse(name, action string, response Response) error {
+	if action != ActionNotes && action != ActionNotesCreate {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, note := range response.Notes {
+		if note.Source != name {
+			return fmt.Errorf("note %q source must be provider name %q", note.ID, name)
+		}
+		if err := validateNote(note); err != nil {
+			return err
+		}
+		if seen[note.ID] {
+			return fmt.Errorf("duplicate note id %q", note.ID)
+		}
+		seen[note.ID] = true
+	}
+	if action == ActionNotesCreate && len(response.Notes) != 1 {
+		return fmt.Errorf("create must return exactly one note, got %d", len(response.Notes))
+	}
+	return nil
+}
+
+func validateCreateResponse(request Request, response Response) error {
+	if request.Action != ActionNotesCreate || len(response.Notes) != 1 || request.Note == nil {
+		return nil
+	}
+	note := response.Notes[0]
+	if note.Anchor != request.Note.Anchor {
+		return errors.New("created note anchor does not match the requested anchor")
+	}
+	anchor := note.Anchor
+	placement := note.Placement
+	if placement.Quality != PlacementExact || placement.Path != anchor.Path ||
+		placement.Side != anchor.Side || placement.StartSide != anchor.StartSide ||
+		placement.StartLine != anchor.StartLine || placement.Line != anchor.Line {
+		return errors.New("created note placement must exactly match the requested anchor")
+	}
+	return nil
+}
+
+func validateResponseComparison(request Request, response Response) error {
+	if request.Action != ActionNotes && request.Action != ActionNotesCreate {
+		return nil
+	}
+	target := requestComparisonTarget(request)
+	for _, note := range response.Notes {
+		placement := note.Placement
+		if placement.Target != target || placement.Base != request.Base ||
+			placement.Head != request.Head || placement.Fingerprint != request.Fingerprint {
+			return fmt.Errorf("note %q placement does not match the requested comparison", note.ID)
+		}
+		anchor := note.Anchor
+		if anchor.Target != target {
+			return fmt.Errorf("note %q anchor target does not match the requested comparison", note.ID)
+		}
+		if target == NoteTargetCommits {
+			if anchor.Head == "" {
+				return fmt.Errorf("note %q committed anchor head is required", note.ID)
+			}
+		} else if anchor.Base != request.Base || anchor.Head != request.Head {
+			return fmt.Errorf("note %q anchor endpoints do not match the requested comparison", note.ID)
+		}
+	}
+	return nil
+}
+
+func requestComparisonTarget(request Request) string {
+	if request.To != "" || request.Head != "" {
+		return NoteTargetCommits
+	}
+	if request.Staged {
+		return NoteTargetIndex
+	}
+	return NoteTargetWorking
 }
 
 func failedCheck(kind, target string, err error) providerlib.Check {

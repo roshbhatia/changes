@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -57,6 +58,10 @@ func main() {
 		runProvider(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "note" {
+		runNote(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "difftool" {
 		runDifftool(os.Args[2:])
 		return
@@ -80,6 +85,7 @@ func main() {
 	every := flag.Duration("interval", 700*time.Millisecond, flagDescription(metadata, "interval"))
 	width := flag.Int("width", 0, flagDescription(metadata, "width"))
 	noCalls := flag.Bool("no-calls", false, flagDescription(metadata, "no-calls"))
+	noNotes := flag.Bool("no-notes", false, flagDescription(metadata, "no-notes"))
 	noSyms := flag.Bool("no-symbols", false, flagDescription(metadata, "no-symbols"))
 	budget := flag.Duration("budget", time.Duration(configured.Providers.Timeout), flagDescription(metadata, "budget"))
 	recurse := flag.Bool("recursive", false, flagDescription(metadata, "recursive"))
@@ -104,6 +110,12 @@ func main() {
 	if *showVersion {
 		fmt.Println(version)
 		return
+	}
+	if *watch && *every <= 0 {
+		fail(errors.New("--interval must be greater than zero in watch mode"))
+	}
+	if *watch && !*noNotes && configured.Notes.RefreshInterval.Duration() <= 0 {
+		fail(errors.New("notes.refreshInterval must be greater than zero in watch mode"))
 	}
 	resolvedColor := configureColor(*color)
 	engineOptions := engine.Options{
@@ -194,6 +206,8 @@ func main() {
 		width:         *width,
 		syms:          !*noSyms && !*stat,
 		calls:         !*noCalls && !*stat,
+		notes:         !*noNotes && !*stat,
+		noteInterval:  configured.Notes.RefreshInterval.Duration(),
 		budget:        *budget,
 		color:         resolvedColor,
 		engine:        *diffEngine,
@@ -303,6 +317,8 @@ type renderer struct {
 	width         int
 	syms          bool
 	calls         bool
+	notes         bool
+	noteInterval  time.Duration
 	budget        time.Duration
 	color         string
 	engine        string
@@ -320,21 +336,91 @@ func (r renderer) render() (string, error) {
 }
 
 func (r renderer) renderPatches(patches []string) (string, error) {
-	if r.stat || (r.engine == "builtin" && r.engineOptions.Layout == "side-by-side") {
-		return r.draw(patches, false), nil
+	output, _, err := r.renderPatchesWithNotes(patches, "", r.notes)
+	return output, err
+}
+
+func (r renderer) renderPatchesWithNotes(patches []string, notes string, refreshNotes bool) (string, string, error) {
+	if r.stat {
+		return r.draw(patches, false), notes, nil
 	}
-	body, err := r.display(patches)
-	if err != nil {
-		return "", err
+	body := ""
+	if r.engine == "builtin" && r.engineOptions.Layout == "side-by-side" {
+		body = r.draw(patches, false)
+	} else {
+		var err error
+		body, err = r.display(patches)
+		if err != nil {
+			return "", notes, err
+		}
 	}
-	summary := r.semanticContext(patches)
+	if refreshNotes {
+		notes = r.noteContext(patches)
+	}
+	sections := []string{}
+	if notes != "" {
+		sections = append(sections, notes)
+	}
+	if r.engineOptions.Layout != "side-by-side" {
+		if semantic := r.semanticContext(patches); semantic != "" {
+			sections = append(sections, semantic)
+		}
+	}
+	summary := strings.Join(sections, "\n\n")
 	if summary == "" {
-		return body, nil
+		return body, notes, nil
 	}
 	if body == "" {
-		return summary, nil
+		return summary, notes, nil
 	}
-	return summary + "\n\n" + body, nil
+	return summary + "\n\n" + body, notes, nil
+}
+
+func (r renderer) noteContext(patches []string) string {
+	if !r.notes {
+		return ""
+	}
+	readers, err := selectNoteProviders(r.providers, provider.ActionNotes, "")
+	if err != nil || len(readers) == 0 {
+		return ""
+	}
+	all := []provider.Note{}
+	for index, spec := range r.specs {
+		snapshot, err := stableNoteSnapshot(spec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "changes: read note comparison for %s: %v\n", spec.Dir, err)
+			continue
+		}
+		if len(snapshot.files) == 0 {
+			continue
+		}
+		currentDisplayed, err := spec.Diff()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "changes: verify note comparison for %s: %v\n", spec.Dir, err)
+			continue
+		}
+		if currentDisplayed != patches[index] {
+			fmt.Fprintf(os.Stderr, "changes: note comparison changed before rendering %s\n", spec.Dir)
+			continue
+		}
+		notes, failures := readNotes(
+			spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head,
+			readers, r.budget,
+		)
+		for _, failure := range failures {
+			fmt.Fprintf(os.Stderr, "changes: %v\n", failure)
+		}
+		under := r.prefix(spec.Dir)
+		for _, note := range notes {
+			note.Anchor.Path = under + note.Anchor.Path
+			if note.Placement.Path != "" {
+				note.Placement.Path = under + note.Placement.Path
+			}
+			all = append(all, note)
+		}
+	}
+	sortNotes(all)
+	return renderNoteRows(all, r.columns())
 }
 
 func (r renderer) display(patches []string) (string, error) {
@@ -412,9 +498,12 @@ func (r renderer) diffOptions(patches []string, summary bool) diffview.Options {
 		if under != "" {
 			opts.Pins[strings.TrimSuffix(under, "/")] = true
 		}
-		touched := make([]string, 0, len(files))
-		for _, file := range files {
-			touched = append(touched, rawPaths[file.Path])
+		touched, err := spec.Files()
+		if err != nil {
+			touched = make([]string, 0, len(files))
+			for _, file := range files {
+				touched = append(touched, rawPaths[file.Path])
+			}
 		}
 		syms, edges := r.layers(spec, touched, patches[i])
 		for j := range files {
@@ -646,33 +735,68 @@ func mergeEdges(target, source map[string][]diffview.Edge) {
 // side view was tuned against.
 func (r renderer) columns() int { return columns(r.width) }
 
-// follow reprints on change rather than on a timer, because a diff that has not
-// moved redraws to the same bytes and the flicker says nothing. The raw patches
-// are the change detector: they are what every layer is derived from.
+// follow reprints only when the complete frame changes. It checks patches on
+// the watch interval and notes on their slower refresh interval, which keeps
+// remote providers below the local file polling rate.
 func (r renderer) follow(every time.Duration) error {
-	last := ""
+	lastPatches := ""
+	lastFrame := ""
+	lastNoteRead := time.Time{}
+	noteSummary := ""
+	initialized := false
 	for {
 		patches, err := r.patches()
 		if err != nil {
 			return err
 		}
-		now := strings.Join(patches, "\x00")
-		if now != last {
-			last = now
-			out, err := r.renderPatches(patches)
+		currentPatches := strings.Join(patches, "\x00")
+		patchChanged := !initialized || currentPatches != lastPatches
+		notesDue := noteRefreshDue(r.notes, lastNoteRead, time.Now(), r.noteInterval)
+		if patchChanged || notesDue {
+			notesForFrame := noteSummary
+			if patchChanged && !notesDue {
+				notesForFrame = staleNoteSummary(noteSummary)
+			}
+			out, refreshedNotes, err := r.renderPatchesWithNotes(patches, notesForFrame, notesDue)
 			if err != nil {
 				return err
+			}
+			if notesDue {
+				noteSummary = refreshedNotes
 			}
 			if out == "" {
 				out = "changes: nothing changed"
 			}
-			// Home the cursor and clear forward, so the frame lands in the
-			// scrollback the reader already has rather than in an alt screen
-			// they cannot scroll.
-			fmt.Print("\x1b[H\x1b[2J", out, "\n")
+			if !initialized || out != lastFrame {
+				// Home the cursor and clear forward, so the frame lands in the
+				// scrollback the reader already has rather than in an alt screen
+				// they cannot scroll.
+				fmt.Print("\x1b[H\x1b[2J", out, "\n")
+			}
+			lastFrame = out
+			if notesDue {
+				lastNoteRead = time.Now()
+			}
 		}
+		lastPatches = currentPatches
+		initialized = true
 		time.Sleep(every)
 	}
+}
+
+func staleNoteSummary(summary string) string {
+	if summary == "" {
+		return ""
+	}
+	_, body, found := strings.Cut(summary, "\n")
+	if !found {
+		body = summary
+	}
+	return contextTitle.Render("notes (previous comparison; refresh pending)") + "\n" + body
+}
+
+func noteRefreshDue(enabled bool, lastRead, now time.Time, interval time.Duration) bool {
+	return enabled && now.Sub(lastRead) >= interval
 }
 
 func columns(width int) int {
@@ -821,8 +945,12 @@ func runCompletion(args []string) {
 }
 
 func runCompletionValues(args []string) {
-	if len(args) != 1 {
-		fail(errors.New("__values requires one value set"))
+	if len(args) < 1 || len(args) > 2 {
+		fail(errors.New("__values requires one value set and optional command context"))
+	}
+	context := ""
+	if len(args) == 2 {
+		context = args[1]
 	}
 	var values []string
 	switch args[0] {
@@ -831,8 +959,8 @@ func runCompletionValues(args []string) {
 		values = append(values, gitCompletionValues("ls-files", "-z", "--cached", "--others", "--exclude-standard")...)
 	case "paths":
 		values = gitCompletionValues("ls-files", "-z", "--cached", "--others", "--exclude-standard")
-	case "providers":
-		configured, err := appconfig.Load("")
+	case "providers", "note-readers", "note-writers":
+		configured, err := appconfig.Load(argumentValue(splitCompletionContext(context), "config"))
 		if err != nil {
 			return
 		}
@@ -841,7 +969,15 @@ func runCompletionValues(args []string) {
 			return
 		}
 		for _, candidate := range discovery.Providers {
-			values = append(values, candidate.Manifest.Name)
+			action := ""
+			if args[0] == "note-readers" {
+				action = provider.ActionNotes
+			} else if args[0] == "note-writers" {
+				action = provider.ActionNotesCreate
+			}
+			if action == "" || provider.Supports(candidate.Manifest, action) {
+				values = append(values, candidate.Manifest.Name)
+			}
 		}
 	case "shells":
 		values = []string{"bash", "zsh", "fish", "nu"}
@@ -849,6 +985,52 @@ func runCompletionValues(args []string) {
 		fail(fmt.Errorf("unknown completion value set %q", args[0]))
 	}
 	writeCompletionValues(os.Stdout, values)
+}
+
+func splitCompletionContext(value string) []string {
+	var fields []string
+	var current strings.Builder
+	quote := rune(0)
+	escaped := false
+	flush := func() {
+		if current.Len() > 0 {
+			fields = append(fields, current.String())
+			current.Reset()
+		}
+	}
+	for _, character := range value {
+		if escaped {
+			current.WriteRune(character)
+			escaped = false
+			continue
+		}
+		if character == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if character == quote {
+				quote = 0
+			} else {
+				current.WriteRune(character)
+			}
+			continue
+		}
+		if character == '\'' || character == '"' {
+			quote = character
+			continue
+		}
+		if unicode.IsSpace(character) {
+			flush()
+			continue
+		}
+		current.WriteRune(character)
+	}
+	if escaped {
+		current.WriteRune('\\')
+	}
+	flush()
+	return fields
 }
 
 func writeCompletionValues(output io.Writer, values []string) {
@@ -899,9 +1081,9 @@ func gitCompletionOutput(args ...string) ([]byte, bool) {
 func commandMetadata() completion.Command {
 	return completion.Command{
 		Name:              "changes",
-		Synopsis:          "Render Git changes with symbol and call analysis",
+		Synopsis:          "Render Git changes with symbol, call, and note context",
 		CompletionCommand: completionValuesInvocation("repository"),
-		LongDescription: `Refs follow git diff: none is HEAD against the working tree, one is that ref
+		LongDescription: `Refs follow git diff: none is the index against the working tree, one is that ref
 against the working tree, and two compare the trees. A from of the form a..b is
 split into two refs.
 
@@ -918,6 +1100,7 @@ name.`,
 			{Name: "interval", Description: "Watch interval", Value: true},
 			{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
 			{Name: "no-calls", Description: "Skip call analysis"},
+			{Name: "no-notes", Description: "Skip diff notes"},
 			{Name: "no-symbols", Description: "Skip symbol analysis"},
 			{Name: "recursive", Short: "r", Description: "Read all workspace repositories"},
 			{Name: "root", Description: "Workspace scan root", Value: true},
@@ -967,20 +1150,61 @@ name.`,
 				},
 			},
 			{
+				Name:     "note",
+				Synopsis: "Create and inspect diff notes",
+				Subcommands: []completion.Command{
+					{
+						Name:     "add",
+						Synopsis: "Create a note on the selected diff",
+						Flags: []completion.Flag{
+							{Name: "author", Description: "Note author", Value: true},
+							{Name: "commit", Description: "First-parent commit comparison", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+							{Name: "config", Description: "YAML configuration file", Value: true},
+							{Name: "file", Description: "Repository file to annotate", Value: true, CompletionCommand: completionValuesInvocation("paths")},
+							{Name: "from", Description: "Left revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+							{Name: "json", Description: "Print the created note as JSON"},
+							{Name: "line", Description: "Last line of the note range", Value: true},
+							{Name: "message", Description: "Summary and optional rationale", Value: true},
+							{Name: "message-file", Description: "Read note text from a file or standard input", Value: true},
+							{Name: "origin", Description: "Author kind", Value: true, Values: []string{"agent", "user"}},
+							{Name: "provider", Description: "Writable note provider", Value: true, CompletionCommand: contextualCompletionValuesInvocation("note-writers")},
+							{Name: "session", Description: "Harness session identifier", Value: true},
+							{Name: "side", Description: "Diff side", Value: true, Values: []string{"left", "right"}},
+							{Name: "staged", Description: "Compare the index"},
+							{Name: "start-line", Description: "First line of a multi-line range", Value: true},
+							{Name: "to", Description: "Right revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+						},
+					},
+					{
+						Name:     "list",
+						Synopsis: "List notes on the selected diff",
+						Flags: []completion.Flag{
+							{Name: "commit", Description: "First-parent commit comparison", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+							{Name: "config", Description: "YAML configuration file", Value: true},
+							{Name: "from", Description: "Left revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+							{Name: "json", Description: "Print JSON"},
+							{Name: "provider", Description: "Note provider", Value: true, CompletionCommand: contextualCompletionValuesInvocation("note-readers")},
+							{Name: "staged", Description: "Compare the index"},
+							{Name: "to", Description: "Right revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+						},
+					},
+				},
+			},
+			{
 				Name:     "provider",
-				Synopsis: "Inspect and validate analysis providers",
+				Synopsis: "Inspect and validate context providers",
 				Subcommands: []completion.Command{
 					{
 						Name:              "list",
 						Synopsis:          "List configured analysis providers",
 						Flags:             providerCommandFlags(),
-						CompletionCommand: completionValuesInvocation("providers"),
+						CompletionCommand: contextualCompletionValuesInvocation("providers"),
 					},
 					{
 						Name:              "validate",
 						Synopsis:          "Validate provider commands and JSON behavior",
 						Flags:             providerCommandFlags(),
-						CompletionCommand: completionValuesInvocation("providers"),
+						CompletionCommand: contextualCompletionValuesInvocation("providers"),
 					},
 				},
 			},
@@ -990,6 +1214,10 @@ name.`,
 
 func completionValuesInvocation(kind string) []string {
 	return []string{"changes", "__values", kind}
+}
+
+func contextualCompletionValuesInvocation(kind string) []string {
+	return []string{"changes", "__values", kind, completion.ContextPlaceholder}
 }
 
 // the shared generator adds completion itself, so omit the explicit entry.

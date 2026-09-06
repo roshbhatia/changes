@@ -30,7 +30,7 @@ media_is_valid() {
 
 if [[ ${1:-} == "--check" ]]; then
   expected=$(media_fingerprint)
-  current=$(cat "$output_dir/.changes-media.sha256" 2> /dev/null || true)
+  current=$(cat "$output_dir/.changes-media.sha256" 2>/dev/null || true)
   if [[ $current != "$expected" ]] || ! media_is_valid; then
     echo "Changes media is stale; run ./hack/screenshots.sh" >&2
     exit 1
@@ -41,13 +41,15 @@ fi
 media_root=$(mktemp -d)
 fixture="$media_root/fixture"
 trap 'rm -rf "$media_root"' EXIT
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_WORK_TREE
 mkdir -p \
   "$fixture" \
   "$media_root/cache" \
   "$media_root/config" \
   "$media_root/data" \
   "$media_root/data-dirs" \
-  "$media_root/home"
+  "$media_root/home" \
+  "$media_root/state"
 
 full_path=$(nix build .#full --no-link --print-out-paths)
 
@@ -83,7 +85,7 @@ printf '%s\n' \
   '    }' \
   '    return nil' \
   '}' \
-  > "$fixture/internal/auth/token.go"
+  >"$fixture/internal/auth/token.go"
 git -C "$fixture" add internal/auth/token.go
 git -C "$fixture" commit -qm initial
 printf '%s\n' \
@@ -126,7 +128,7 @@ printf '%s\n' \
   '    }' \
   '    return nil' \
   '}' \
-  > "$fixture/internal/auth/token.go"
+  >"$fixture/internal/auth/token.go"
 
 (
   cd "$fixture"
@@ -135,7 +137,15 @@ printf '%s\n' \
   export XDG_CONFIG_HOME="$media_root/config"
   export XDG_DATA_HOME="$media_root/data"
   export XDG_DATA_DIRS="$media_root/data-dirs"
+  export XDG_STATE_HOME="$media_root/state"
   unset CHANGES_CONFIG CHANGES_PROVIDERS_DIRECTORY
+  PATH="$full_path/bin:$PATH" \
+    changes note add \
+    --file internal/auth/token.go \
+    --line 15 \
+    --author screenshot \
+    --message $'Keep the Bearer parsing boundary\nCallers depend on normalized input after this branch.' \
+    >/dev/null
   PATH="$full_path/bin:$PATH" \
     CHANGES_DIFF_ENGINE=builtin \
     CHANGES_DIFF_LAYOUT=unified \
@@ -157,4 +167,4 @@ if ! media_is_valid; then
   exit 1
 fi
 
-media_fingerprint > "$output_dir/.changes-media.sha256"
+media_fingerprint >"$output_dir/.changes-media.sha256"

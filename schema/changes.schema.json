@@ -38,6 +38,21 @@
       "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
       "description": "Go duration such as 500ms, 10s, or 2m"
     },
+    "Notes": {
+      "properties": {
+        "editor": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refreshInterval": {
+          "$ref": "#/$defs/Duration"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "Providers": {
       "properties": {
         "cacheMaxEntries": {
@@ -69,6 +84,9 @@
     },
     "diff": {
       "$ref": "#/$defs/Diff"
+    },
+    "notes": {
+      "$ref": "#/$defs/Notes"
     },
     "providers": {
       "$ref": "#/$defs/Providers"

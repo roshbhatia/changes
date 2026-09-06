@@ -12,7 +12,15 @@ import (
 type Config struct {
 	Color     string    `json:"color,omitempty" yaml:"color" jsonschema:"enum=auto,enum=always,enum=never"`
 	Diff      Diff      `json:"diff,omitempty" yaml:"diff"`
+	Notes     Notes     `json:"notes,omitempty" yaml:"notes"`
 	Providers Providers `json:"providers,omitempty" yaml:"providers"`
+}
+
+// Notes configures interactive note authoring. The command receives the draft
+// file through $FILE, or as its final argument when the placeholder is absent.
+type Notes struct {
+	Editor          []string             `json:"editor,omitempty" yaml:"editor"`
+	RefreshInterval providerlib.Duration `json:"refreshInterval,omitempty" yaml:"refreshInterval,omitempty"`
 }
 
 // Providers controls external provider discovery and execution.
@@ -39,6 +47,7 @@ func Default() Config {
 			Engine: "builtin",
 			Layout: "unified",
 		},
+		Notes: Notes{RefreshInterval: providerlib.Duration(30 * time.Second)},
 		Providers: Providers{
 			CacheMaxEntries: 256,
 			CacheTTL:        providerlib.Duration(time.Hour),

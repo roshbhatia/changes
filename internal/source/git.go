@@ -3,6 +3,7 @@ package source
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -11,9 +12,9 @@ import (
 	"github.com/roshbhatia/go-utils/git"
 )
 
-// Spec names one comparison, in git's own terms: no refs is HEAD against the
-// working tree, one ref is that ref against the working tree, two refs compare
-// the trees. Staged swaps the working tree for the index.
+// Spec names one comparison, in git's own terms: no refs is the index against
+// the working tree, one ref is that ref against the working tree, and two refs
+// compare the trees. Staged compares HEAD or one ref against the index.
 type Spec struct {
 	Dir    string
 	From   string
@@ -22,11 +23,125 @@ type Spec struct {
 	Paths  []string
 }
 
+// ComparisonIDs resolves stable endpoint identities for a comparison. A
+// working comparison uses a digest of the index entries as its base. The
+// working tree and index have no right-side object, so Head is empty and the
+// patch fingerprint identifies their current contents.
+func (s Spec) ComparisonIDs() (base, head string) {
+	if s.From == "" && s.To == "" && !s.Staged {
+		return indexIdentity(s.Dir), ""
+	}
+	left := s.From
+	if left == "" {
+		left = "HEAD"
+	}
+	base, _ = objectID(s.Dir, left)
+	if s.To != "" {
+		head, _ = objectID(s.Dir, s.To)
+	}
+	return base, head
+}
+
+func indexIdentity(directory string) string {
+	command := exec.Command("git", "ls-files", "--stage", "-z")
+	command.Dir = directory
+	command.Env = git.CleanEnv()
+	digest := sha256.New()
+	command.Stdout = digest
+	if err := command.Run(); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("index:%x", digest.Sum(nil))
+}
+
+func objectID(dir, revision string) (string, error) {
+	var last error
+	for _, kind := range []string{"commit", "tree"} {
+		value, err := git.Output(dir, "rev-parse", "--verify", revision+"^{"+kind+"}")
+		if err == nil {
+			return strings.TrimSpace(value), nil
+		}
+		last = err
+	}
+	return "", last
+}
+
 // Diff returns the unified patch. Zero context would drop the side by side
 // view's carried lines, and git's default of three is what the renderer was
 // tuned against.
 func (s Spec) Diff() (string, error) {
 	return s.runDiff("never")
+}
+
+// Files returns repository-relative paths touched by the comparison. Reading
+// names separately preserves a deleted file's old path, which a unified +++
+// header reports as /dev/null.
+func (s Spec) Files() ([]string, error) {
+	args, err := s.args("never")
+	if err != nil {
+		return nil, err
+	}
+	args = append([]string{args[0], "--name-only", "-z"}, args[1:]...)
+	command := exec.Command("git", args...)
+	command.Dir = s.Dir
+	command.Env = git.CleanEnv()
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
+	}
+	parts := bytes.Split(stdout.Bytes(), []byte{0})
+	files := make([]string, 0, len(parts))
+	for _, path := range parts {
+		if len(path) != 0 {
+			files = append(files, string(path))
+		}
+	}
+	return files, nil
+}
+
+// NoteFiles returns every path that can anchor a note. Renames include both
+// names because left-side notes use the source path and right-side notes use
+// the destination path.
+func (s Spec) NoteFiles() ([]string, error) {
+	args, err := s.args("never")
+	if err != nil {
+		return nil, err
+	}
+	args = append([]string{args[0], "--name-status", "-z"}, args[1:]...)
+	command := exec.Command("git", args...)
+	command.Dir = s.Dir
+	command.Env = git.CleanEnv()
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
+	}
+	records := bytes.Split(stdout.Bytes(), []byte{0})
+	files := []string{}
+	seen := map[string]bool{}
+	for index := 0; index < len(records) && len(records[index]) != 0; {
+		status := string(records[index])
+		index++
+		paths := 1
+		if strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C") {
+			paths = 2
+		}
+		if index+paths > len(records) {
+			return nil, errors.New("git returned a malformed name-status record")
+		}
+		for range paths {
+			path := string(records[index])
+			index++
+			if path != "" && !seen[path] {
+				seen[path] = true
+				files = append(files, path)
+			}
+		}
+	}
+	return files, nil
 }
 
 // DisplayDiff asks Git to render its own patch. It is the zero-configuration
@@ -57,7 +172,7 @@ func (s Spec) args(color string) ([]string, error) {
 	if s.Staged && s.To != "" {
 		return nil, errors.New("staged comparisons accept at most one revision")
 	}
-	args := []string{"diff", "--color=" + color, "--find-renames"}
+	args := []string{"diff", "--color=" + color, "--find-renames", "--src-prefix=a/", "--dst-prefix=b/"}
 	args = append(args, "--no-ext-diff")
 	if s.Staged {
 		args = append(args, "--cached")
