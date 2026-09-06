@@ -212,3 +212,13 @@ func TestDiffUsesStablePrefixesWithMnemonicPrefixConfigured(t *testing.T) {
 		t.Fatalf("diff used unstable prefixes:\n%s", patch)
 	}
 }
+
+func TestLimitedBufferBoundsGitPatchOutput(t *testing.T) {
+	buffer := limitedBuffer{limit: 4}
+	if written, err := buffer.Write([]byte("123456")); err != nil || written != 6 {
+		t.Fatalf("write = %d, %v", written, err)
+	}
+	if !buffer.exceeded || buffer.String() != "1234" {
+		t.Fatalf("limited buffer = %q, exceeded=%v", buffer.String(), buffer.exceeded)
+	}
+}

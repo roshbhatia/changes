@@ -36,6 +36,7 @@ const (
 
 // NoteDraft is the source-neutral input to a writable note provider.
 type NoteDraft struct {
+	Key       string     `json:"key,omitempty"`
 	Summary   string     `json:"summary"`
 	Rationale string     `json:"rationale,omitempty"`
 	Author    string     `json:"author"`
@@ -105,6 +106,9 @@ func validateNoteDraft(note *NoteDraft) error {
 	}
 	if !oneOf(note.Origin, NoteOriginAgent, NoteOriginUser) {
 		return fmt.Errorf("note origin must be %q or %q", NoteOriginAgent, NoteOriginUser)
+	}
+	if hasControlCharacter(note.Key) || len([]rune(note.Key)) > 200 {
+		return errors.New("note key must be at most 200 characters without control bytes")
 	}
 	return validateAnchor(note.Anchor)
 }

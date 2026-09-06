@@ -4,9 +4,9 @@
 
 ![Changes animated diff review](docs/changes.gif)
 
-`changes` reads Git changes as a repository tree. It groups edits under
-symbols, annotates changed call edges, and places provider-backed notes above
-the diff.
+`changes` reads Git changes as a repository tree. A grouping provider can put
+related hunks into an ordered logical flow before the tree nests hunks under
+their symbols, annotates changed calls, and places notes under anchored lines.
 
 The core depends only on Git. Optional analysis and display tools run through
 external command contracts. The `extras/` directory owns every reference
@@ -22,6 +22,7 @@ Install the provider-free core, then add only the providers you use:
 nix profile install github:roshbhatia/changes#changes
 nix profile install github:roshbhatia/changes#provider-ast-grep
 nix profile install github:roshbhatia/changes#provider-calldiff
+nix profile install github:roshbhatia/changes#provider-codex-review
 nix profile install github:roshbhatia/changes#provider-local-notes
 nix profile install github:roshbhatia/changes#provider-github-pr
 ```
@@ -48,7 +49,7 @@ only. Git must be on `PATH`.
 ## Use it
 
 ```bash
-# Review the current repository with Git's inline diff.
+# Review the current repository as an embedded diff tree.
 changes
 
 # Review all repositories in a workspace since two hours ago.
@@ -68,6 +69,8 @@ workflows. Note workflows cover
 [`GitHub PR review`](examples/github-pr-notes/README.md), and
 [`manual notes`](examples/manual-notes/README.md). Provider authors can use
 [`examples/provider-validation`](examples/provider-validation/README.md).
+[`Logical change groups`](examples/logical-change-groups/README.md) order
+related hunks by request flow instead of file name.
 
 ## Configure it
 
@@ -79,16 +82,17 @@ such as `CHANGES_DIFF_LAYOUT=side-by-side`.
 # yaml-language-server: $schema=https://raw.githubusercontent.com/roshbhatia/changes/main/schema/changes.schema.json
 color: auto
 diff:
-  engine: filter
+  engine: builtin
   layout: unified
-  filter: [delta, --paging=never]
   difftool: [difft, --color, always, --display, side-by-side, $LOCAL, $REMOTE]
 notes:
   editor: [nvim, $FILE]
+  generatorTimeout: 5m
   refreshInterval: 30s
 providers:
   cacheMaxEntries: 256
   cacheTtl: 1h
+  group: my-group-provider
   timeout: 20s
 ```
 
@@ -115,10 +119,29 @@ configuration directory.
 
 Each provider uses the shared `provider/v1` manifest. Actions add arguments and
 environment values through Go templates. Changes executes the resulting argv
-directly and never inserts a shell. The core only knows the semantic actions
-`changes.symbols`, `changes.calls`, `changes.notes`, and
-`changes.notes.create`. Note reads and writes are never cached. Watch mode
-polls note providers at `notes.refreshInterval`, independent of file polling.
+directly and never inserts a shell. The core knows the semantic actions
+`changes.groups`, `changes.symbols`, `changes.calls`, `changes.notes`,
+`changes.notes.create`, and `changes.notes.generate`.
+
+A grouping provider returns an ordered tree plus file or line anchors. Changes
+assigns each hunk to the first matching group and keeps unmatched hunks under
+`other changes`. Select one with `providers.group` or `--group-provider`;
+discovery priority chooses the default. Logical grouping requires the
+`builtin` display engine because filter output has no stable hunk structure.
+
+Group, symbol, and call results use the provider cache. Note reads, writes, and
+generation are never cached. Watch mode polls readers at
+`notes.refreshInterval`. It never runs a note generator. One `--budget` covers
+all provider analysis for the rendered comparison.
+
+`changes.notes.create` accepts either one `note` or one atomic `notes` batch.
+`changes note generate` writes every generated note as one batch and uses the
+generator note ID as its idempotency key. A generator must return the same ID
+for the same semantic note on an equivalent request. A store retry must return
+the existing note for the same key and payload, and must reject a changed
+payload for that key.
+Provider requests and responses are each limited to 16 MiB. Input patches are
+limited to 64 MiB.
 
 Provider results expire after `providers.cacheTtl`. Changes keeps at most
 `providers.cacheMaxEntries` persistent results. Set either value to zero to
@@ -149,16 +172,15 @@ Generate the schema and command reference with `changes generate`. CI uses
 
 ### `changes`
 
-Render Git changes with symbol, call, and note context
+Render Git changes with logical groups, symbols, calls, and notes
 
 Refs follow git diff: none is the index against the working tree, one is that ref
 against the working tree, and two compare the trees. A from of the form a..b is
 split into two refs.
 
--r reads every repository under the workspace. The workspace is
-$SYSINIT_WORKSPACE when the working directory sits inside it, then the Git top
-level, then the working directory. Each repository's files hang under its own
-name.
+-r reads every repository under the workspace. Use -root to select its
+boundary. Without -root, Changes uses the Git top level, then the working
+directory. Each repository's files hang under its own name.
 
 | Option | Description |
 | --- | --- |
@@ -167,9 +189,11 @@ name.
 | `--config` `<value>` | YAML configuration file |
 | `--engine` `<value>` | Patch display engine |
 | `--filter` `<value>` | Standard-input patch filter |
+| `--group-provider` `<value>` | Logical change-group provider |
 | `--interval` `<value>` | Watch interval |
 | `--layout` `<value>` | Diff layout |
 | `--no-calls` | Skip call analysis |
+| `--no-groups` | Skip logical change grouping |
 | `--no-notes` | Skip diff notes |
 | `--no-symbols` | Skip symbol analysis |
 | `--recursive`, `-r` | Read all workspace repositories |
@@ -244,6 +268,22 @@ Create a note on the selected diff
 | `--side` `<value>` | Diff side |
 | `--staged` | Compare the index |
 | `--start-line` `<value>` | First line of a multi-line range |
+| `--to` `<value>` | Right revision |
+
+### `changes note generate`
+
+Generate notes with a provider and save them
+
+| Option | Description |
+| --- | --- |
+| `--commit` `<value>` | First-parent commit comparison |
+| `--config` `<value>` | YAML configuration file |
+| `--from` `<value>` | Left revision |
+| `--json` | Print generated notes as JSON |
+| `--provider` `<value>` | Note generator provider |
+| `--session` `<value>` | Harness session identifier |
+| `--staged` | Compare the index |
+| `--store` `<value>` | Writable note provider |
 | `--to` `<value>` | Right revision |
 
 ### `changes note list`

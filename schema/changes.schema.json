@@ -46,6 +46,9 @@
           },
           "type": "array"
         },
+        "generatorTimeout": {
+          "$ref": "#/$defs/Duration"
+        },
         "refreshInterval": {
           "$ref": "#/$defs/Duration"
         }
@@ -63,6 +66,9 @@
           "$ref": "#/$defs/Duration"
         },
         "directory": {
+          "type": "string"
+        },
+        "group": {
           "type": "string"
         },
         "timeout": {

@@ -47,14 +47,148 @@ func runNote(args []string) {
 		printCommandHelp(flags.Output(), "changes note <command>", metadata, flags)
 		return
 	}
-	if len(args) == 0 || (args[0] != "add" && args[0] != "list") {
-		fail(errors.New("note requires add or list"))
+	if len(args) == 0 || (args[0] != "add" && args[0] != "generate" && args[0] != "list") {
+		fail(errors.New("note requires add, generate, or list"))
 	}
 	if args[0] == "add" {
 		runNoteAdd(args[1:])
 		return
 	}
+	if args[0] == "generate" {
+		runNoteGenerate(args[1:])
+		return
+	}
 	runNoteList(args[1:])
+}
+
+func runNoteGenerate(args []string) {
+	metadata := subcommandMetadata("note", "generate")
+	flags := flag.NewFlagSet("changes note generate", flag.ContinueOnError)
+	configPath := flags.String("config", argumentValue(args, "config"), flagDescription(metadata, "config"))
+	providerName := flags.String("provider", "", flagDescription(metadata, "provider"))
+	storeName := flags.String("store", "", flagDescription(metadata, "store"))
+	session := flags.String("session", "", flagDescription(metadata, "session"))
+	asJSON := flags.Bool("json", false, flagDescription(metadata, "json"))
+	comparison := addNoteComparisonFlags(flags, metadata)
+	flags.Usage = func() {
+		printCommandHelp(flags.Output(), "changes note generate [flags]", metadata, flags)
+	}
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		fail(err)
+	}
+	if flags.NArg() != 0 {
+		fail(errors.New("note generate accepts only flags"))
+	}
+	configured, err := appconfig.Load(*configPath)
+	if err != nil {
+		fail(err)
+	}
+	if configured.Notes.GeneratorTimeout.Duration() <= 0 {
+		fail(errors.New("notes.generatorTimeout must be greater than zero"))
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fail(err)
+	}
+	spec, _, err := noteSpec(cwd, "", *comparison)
+	if err != nil {
+		fail(err)
+	}
+	snapshot, err := stableNoteSnapshot(spec)
+	if err != nil {
+		fail(err)
+	}
+	if len(snapshot.files) == 0 {
+		if *asJSON {
+			fmt.Println(`{"version":"changes.notes/v1","notes":[]}`)
+		}
+		return
+	}
+	discovery, err := provider.Discover(configured.Providers.Directory)
+	if err != nil {
+		fail(err)
+	}
+	generators, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesGenerate, *providerName, "generator")
+	if err != nil {
+		fail(err)
+	}
+	writers, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesCreate, *storeName, "store")
+	if err != nil {
+		fail(err)
+	}
+	request := noteRequestWithIDs(spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head)
+	request.Patch = snapshot.patch
+	ctx, cancel := context.WithTimeout(context.Background(), configured.Notes.GeneratorTimeout.Duration())
+	response, err := provider.Run(ctx, generators[0], provider.ActionNotesGenerate, request, provider.CachePolicy{})
+	cancel()
+	if err != nil {
+		fail(err)
+	}
+	allowed := make(map[string]bool, len(snapshot.files))
+	for _, path := range snapshot.files {
+		allowed[filepath.ToSlash(filepath.Clean(path))] = true
+	}
+	for index := range response.Notes {
+		note := &response.Notes[index]
+		if !allowed[note.Anchor.Path] {
+			fail(fmt.Errorf("provider %s generated a note for unchanged path %q", generators[0].Manifest.Name, note.Anchor.Path))
+		}
+		if err := validateNoteVisibility(snapshot.patch, note); err != nil {
+			fail(fmt.Errorf("provider %s: %w", generators[0].Manifest.Name, err))
+		}
+		if note.Placement.Quality != provider.PlacementExact {
+			fail(fmt.Errorf("provider %s generated note %q without an exact placement", generators[0].Manifest.Name, note.ID))
+		}
+		contextLine, err := noteRangeInFilePatch(
+			snapshot.patch, note.Anchor.Path, note.Anchor.Side, note.Anchor.StartLine, note.Anchor.Line,
+		)
+		if err != nil {
+			fail(fmt.Errorf("provider %s: %w", generators[0].Manifest.Name, err))
+		}
+		note.Anchor.Context = contextLine
+	}
+	after, err := stableNoteSnapshot(spec)
+	if err != nil {
+		fail(err)
+	}
+	if after.patch != snapshot.patch || after.base != snapshot.base || after.head != snapshot.head ||
+		!slices.Equal(after.files, snapshot.files) {
+		fail(errors.New("selected comparison changed while generating notes"))
+	}
+	drafts := make([]provider.NoteDraft, 0, len(response.Notes))
+	for _, generated := range response.Notes {
+		drafts = append(drafts, provider.NoteDraft{
+			Key:     generated.ID,
+			Summary: generated.Summary, Rationale: generated.Rationale, Author: generated.Author,
+			Origin: provider.NoteOriginAgent, Session: *session, Anchor: generated.Anchor,
+		})
+	}
+	created := []provider.Note{}
+	if len(drafts) > 0 {
+		writeRequest := noteRequestWithIDs(spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head)
+		writeRequest.Notes = drafts
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(configured.Providers.Timeout))
+		written, writeErr := provider.Run(ctx, writers[0], provider.ActionNotesCreate, writeRequest, provider.CachePolicy{})
+		cancel()
+		if writeErr != nil {
+			fail(writeErr)
+		}
+		created = written.Notes
+	}
+	if *asJSON {
+		data, err := json.Marshal(noteDocument{Version: "changes.notes/v1", Notes: created})
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+	for _, note := range created {
+		fmt.Printf("note: %s %s\n", cleanNoteOneLine(note.ID), noteLocation(note))
+	}
 }
 
 func runNoteAdd(args []string) {
@@ -168,12 +302,9 @@ func runNoteAdd(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	writable, err := selectNoteProviders(discovery.Providers, provider.ActionNotesCreate, *providerName)
+	writable, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesCreate, *providerName, "store")
 	if err != nil {
 		fail(err)
-	}
-	if len(writable) == 0 {
-		fail(fmt.Errorf("no configured provider implements %s", provider.ActionNotesCreate))
 	}
 	selected := writable[0]
 	request := noteRequestWithIDs(comparisonSpec, []string{relative}, comparisonPatch, base, head)
@@ -239,13 +370,16 @@ func runNoteList(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	notes, failures := readNotes(
-		spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head,
-		readers, time.Duration(configured.Providers.Timeout),
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(configured.Providers.Timeout))
+	result := readNotes(
+		ctx, spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head,
+		readers,
 	)
-	if len(failures) > 0 {
-		fail(errors.Join(failures...))
+	cancel()
+	if len(result.failures) > 0 {
+		fail(errors.Join(result.failures...))
 	}
+	notes := result.notes
 	if *asJSON {
 		if notes == nil {
 			notes = []provider.Note{}
@@ -400,17 +534,23 @@ func noteTarget(spec source.Spec) string {
 	return provider.NoteTargetWorking
 }
 
+type noteProviderRead struct {
+	notes         []provider.Note
+	failures      []error
+	failedSources map[string]bool
+}
+
 func readNotes(
+	ctx context.Context,
 	spec source.Spec,
 	files []string,
 	patch string,
 	base string,
 	head string,
 	providers []provider.LoadedManifest,
-	budget time.Duration,
-) ([]provider.Note, []error) {
+) noteProviderRead {
 	if len(files) == 0 {
-		return []provider.Note{}, nil
+		return noteProviderRead{notes: []provider.Note{}, failedSources: map[string]bool{}}
 	}
 	request := noteRequestWithIDs(spec, files, patch, base, head)
 	allowed := make(map[string]bool, len(files))
@@ -419,12 +559,12 @@ func readNotes(
 	}
 	all := []provider.Note{}
 	var failures []error
+	failedSources := map[string]bool{}
 	for _, configured := range providers {
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		response, err := provider.Run(ctx, configured, provider.ActionNotes, request, provider.CachePolicy{})
-		cancel()
 		if err != nil {
 			failures = append(failures, err)
+			failedSources[configured.Manifest.Name] = true
 			continue
 		}
 		for _, note := range response.Notes {
@@ -434,13 +574,21 @@ func readNotes(
 			}
 			if err := validateNoteVisibility(patch, &note); err != nil {
 				failures = append(failures, fmt.Errorf("provider %s: %w", configured.Manifest.Name, err))
+				failedSources[configured.Manifest.Name] = true
 				continue
 			}
 			all = append(all, note)
 		}
 	}
+	filtered := all[:0]
+	for _, note := range all {
+		if !failedSources[note.Source] {
+			filtered = append(filtered, note)
+		}
+	}
+	all = filtered
 	sortNotes(all)
-	return all, failures
+	return noteProviderRead{notes: all, failures: failures, failedSources: failedSources}
 }
 
 func validateNoteVisibility(patch string, note *provider.Note) error {
@@ -527,6 +675,29 @@ func selectNoteProviders(
 	}
 	if name != "" && len(selected) == 0 {
 		return nil, fmt.Errorf("provider %q does not implement %s", name, action)
+	}
+	return selected, nil
+}
+
+func selectOneNoteProvider(
+	configured []provider.LoadedManifest,
+	action string,
+	name string,
+	role string,
+) ([]provider.LoadedManifest, error) {
+	selected, err := selectNoteProviders(configured, action, name)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("no configured provider implements %s", action)
+	}
+	if len(selected) > 1 {
+		names := make([]string, 0, len(selected))
+		for _, candidate := range selected {
+			names = append(names, candidate.Manifest.Name)
+		}
+		return nil, fmt.Errorf("multiple note %ss implement %s (%s); select one with --%s", role, action, strings.Join(names, ", "), map[string]string{"generator": "provider", "store": "store"}[role])
 	}
 	return selected, nil
 }

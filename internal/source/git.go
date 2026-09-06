@@ -12,6 +12,9 @@ import (
 	"github.com/roshbhatia/go-utils/git"
 )
 
+// MaxPatchBytes bounds one patch before Changes copies or analyzes it.
+const MaxPatchBytes = 64 << 20
+
 // Spec names one comparison, in git's own terms: no refs is the index against
 // the working tree, one ref is that ref against the working tree, and two refs
 // compare the trees. Staged compares HEAD or one ref against the index.
@@ -195,11 +198,41 @@ func (s Spec) runDiff(color string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := git.Output(s.Dir, args...)
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	command := exec.Command("git", args...)
+	command.Dir = s.Dir
+	command.Env = git.CleanEnv()
+	stdout := limitedBuffer{limit: MaxPatchBytes}
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
 	}
-	return out, nil
+	if stdout.exceeded {
+		return "", fmt.Errorf("git patch exceeds %d bytes", MaxPatchBytes)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+type limitedBuffer struct {
+	bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (buffer *limitedBuffer) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := buffer.limit - buffer.Len()
+	if remaining > 0 {
+		if remaining > len(value) {
+			remaining = len(value)
+		}
+		_, _ = buffer.Buffer.Write(value[:remaining])
+	}
+	if remaining < len(value) {
+		buffer.exceeded = true
+	}
+	return written, nil
 }
 
 // Root resolves the repository the paths are relative to. Every layer keys on

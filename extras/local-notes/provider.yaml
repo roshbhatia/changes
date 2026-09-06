@@ -9,5 +9,5 @@ actions:
   changes.notes.create:
     description: Create a local note for the comparison
 defaults:
-  timeout: 2s
+  timeout: 5s
   priority: 80

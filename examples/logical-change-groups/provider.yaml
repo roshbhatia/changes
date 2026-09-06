@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../../schema/provider.schema.json
+version: provider/v1
+name: demo-groups
+description: Group the demo diff by logical request flow
+command: [./provider]
+actions:
+  changes.groups:
+    description: Return ordered logical change groups
+defaults:
+  timeout: 5s
+  priority: 100

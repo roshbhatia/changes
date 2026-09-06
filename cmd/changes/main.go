@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
@@ -85,6 +86,7 @@ func main() {
 	every := flag.Duration("interval", 700*time.Millisecond, flagDescription(metadata, "interval"))
 	width := flag.Int("width", 0, flagDescription(metadata, "width"))
 	noCalls := flag.Bool("no-calls", false, flagDescription(metadata, "no-calls"))
+	noGroups := flag.Bool("no-groups", false, flagDescription(metadata, "no-groups"))
 	noNotes := flag.Bool("no-notes", false, flagDescription(metadata, "no-notes"))
 	noSyms := flag.Bool("no-symbols", false, flagDescription(metadata, "no-symbols"))
 	budget := flag.Duration("budget", time.Duration(configured.Providers.Timeout), flagDescription(metadata, "budget"))
@@ -96,6 +98,7 @@ func main() {
 	color := flag.String("color", configured.Color, flagDescription(metadata, "color"))
 	diffEngine := flag.String("engine", configured.Diff.Engine, flagDescription(metadata, "engine"))
 	filter := flag.String("filter", "", flagDescription(metadata, "filter"))
+	groupProvider := flag.String("group-provider", configured.Providers.Group, flagDescription(metadata, "group-provider"))
 	layout := flag.String("layout", configured.Diff.Layout, flagDescription(metadata, "layout"))
 	flag.Usage = func() {
 		printCommandHelp(
@@ -113,6 +116,9 @@ func main() {
 	}
 	if *watch && *every <= 0 {
 		fail(errors.New("--interval must be greater than zero in watch mode"))
+	}
+	if *budget <= 0 {
+		fail(errors.New("--budget must be greater than zero"))
 	}
 	if *watch && !*noNotes && configured.Notes.RefreshInterval.Duration() <= 0 {
 		fail(errors.New("notes.refreshInterval must be greater than zero in watch mode"))
@@ -135,6 +141,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "changes: skipped provider %s: %s\n", diagnostic.Manifest.Name, diagnostic.Problem)
 	}
 	providers := discovery.Providers
+	if err := validateGroupSelection(*diffEngine, !*noGroups, *groupProvider, providers); err != nil {
+		fail(err)
+	}
 
 	dir, err := os.Getwd()
 	if err != nil {
@@ -206,10 +215,11 @@ func main() {
 		width:         *width,
 		syms:          !*noSyms && !*stat,
 		calls:         !*noCalls && !*stat,
-		notes:         !*noNotes && !*stat,
+		groups:        !*noGroups && *diffEngine == "builtin",
+		groupProvider: *groupProvider,
+		notes:         !*noNotes,
 		noteInterval:  configured.Notes.RefreshInterval.Duration(),
 		budget:        *budget,
-		color:         resolvedColor,
 		engine:        *diffEngine,
 		engineOptions: engineOptions,
 		providers:     providers,
@@ -317,14 +327,32 @@ type renderer struct {
 	width         int
 	syms          bool
 	calls         bool
+	groups        bool
+	groupProvider string
 	notes         bool
 	noteInterval  time.Duration
 	budget        time.Duration
-	color         string
 	engine        string
 	engineOptions engine.Options
 	providers     []provider.LoadedManifest
 	providerCache provider.CachePolicy
+}
+
+type noteLayer struct {
+	values []provider.Note
+	stale  bool
+}
+
+type noteRead struct {
+	values        []provider.Note
+	complete      bool
+	failedSources map[string]bool
+}
+
+type diffAnalysis struct {
+	options diffview.Options
+	groups  []provider.ChangeGroup
+	aliases map[string]string
 }
 
 func (r renderer) render() (string, error) {
@@ -336,37 +364,28 @@ func (r renderer) render() (string, error) {
 }
 
 func (r renderer) renderPatches(patches []string) (string, error) {
-	output, _, err := r.renderPatchesWithNotes(patches, "", r.notes)
+	output, _, err := r.renderPatchesWithNotes(patches, noteLayer{}, r.notes)
 	return output, err
 }
 
-func (r renderer) renderPatchesWithNotes(patches []string, notes string, refreshNotes bool) (string, string, error) {
-	if r.stat {
-		return r.draw(patches, false), notes, nil
-	}
-	body := ""
-	if r.engine == "builtin" && r.engineOptions.Layout == "side-by-side" {
-		body = r.draw(patches, false)
-	} else {
-		var err error
-		body, err = r.display(patches)
-		if err != nil {
-			return "", notes, err
-		}
-	}
+func (r renderer) renderPatchesWithNotes(patches []string, notes noteLayer, refreshNotes bool) (string, noteLayer, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.budget)
+	defer cancel()
 	if refreshNotes {
-		notes = r.noteContext(patches)
+		notes = refreshNoteLayer(notes, r.noteContext(ctx, patches))
 	}
-	sections := []string{}
-	if notes != "" {
-		sections = append(sections, notes)
+	analysis := r.diffAnalysisContext(ctx, patches, false)
+	notes = remapNotePaths(notes, analysis.aliases)
+	options := analysis.options
+	if r.stat || r.engine == "builtin" {
+		body, err := renderTreeWithGroups(options, analysis.groups, notes, r.columns())
+		return body, notes, err
 	}
-	if r.engineOptions.Layout != "side-by-side" {
-		if semantic := r.semanticContext(patches); semantic != "" {
-			sections = append(sections, semantic)
-		}
+	body, err := r.display(patches)
+	if err != nil {
+		return "", notes, err
 	}
-	summary := strings.Join(sections, "\n\n")
+	summary := semanticTreeRows(options, notes, r.columns())
 	if summary == "" {
 		return body, notes, nil
 	}
@@ -376,19 +395,27 @@ func (r renderer) renderPatchesWithNotes(patches []string, notes string, refresh
 	return summary + "\n\n" + body, notes, nil
 }
 
-func (r renderer) noteContext(patches []string) string {
+func (r renderer) noteContext(ctx context.Context, patches []string) noteRead {
 	if !r.notes {
-		return ""
+		return noteRead{complete: true}
 	}
 	readers, err := selectNoteProviders(r.providers, provider.ActionNotes, "")
-	if err != nil || len(readers) == 0 {
-		return ""
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "changes: select note providers: %v\n", err)
+		return noteRead{}
+	}
+	if len(readers) == 0 {
+		return noteRead{complete: true}
 	}
 	all := []provider.Note{}
+	failedSources := map[string]bool{}
+	complete := true
 	for index, spec := range r.specs {
 		snapshot, err := stableNoteSnapshot(spec)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "changes: read note comparison for %s: %v\n", spec.Dir, err)
+			complete = false
+			failedSources["*"] = true
 			continue
 		}
 		if len(snapshot.files) == 0 {
@@ -397,21 +424,30 @@ func (r renderer) noteContext(patches []string) string {
 		currentDisplayed, err := spec.Diff()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "changes: verify note comparison for %s: %v\n", spec.Dir, err)
+			complete = false
+			failedSources["*"] = true
 			continue
 		}
 		if currentDisplayed != patches[index] {
 			fmt.Fprintf(os.Stderr, "changes: note comparison changed before rendering %s\n", spec.Dir)
+			complete = false
+			failedSources["*"] = true
 			continue
 		}
-		notes, failures := readNotes(
-			spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head,
-			readers, r.budget,
+		displayed := notePathsInPatch(patches[index])
+		result := readNotes(
+			ctx, spec, displayed, snapshot.patch, snapshot.base, snapshot.head,
+			readers,
 		)
-		for _, failure := range failures {
+		for _, failure := range result.failures {
 			fmt.Fprintf(os.Stderr, "changes: %v\n", failure)
 		}
+		complete = complete && len(result.failures) == 0
+		for source := range result.failedSources {
+			failedSources[source] = true
+		}
 		under := r.prefix(spec.Dir)
-		for _, note := range notes {
+		for _, note := range result.notes {
 			note.Anchor.Path = under + note.Anchor.Path
 			if note.Placement.Path != "" {
 				note.Placement.Path = under + note.Placement.Path
@@ -420,23 +456,29 @@ func (r renderer) noteContext(patches []string) string {
 		}
 	}
 	sortNotes(all)
-	return renderNoteRows(all, r.columns())
+	return noteRead{values: all, complete: complete, failedSources: failedSources}
+}
+
+func refreshNoteLayer(previous noteLayer, current noteRead) noteLayer {
+	if current.complete || len(previous.values) == 0 {
+		return noteLayer{values: current.values, stale: !current.complete}
+	}
+	values := append([]provider.Note(nil), current.values...)
+	seen := make(map[string]bool, len(values))
+	for _, note := range values {
+		seen[note.ID] = true
+	}
+	for _, note := range previous.values {
+		if !seen[note.ID] && (current.failedSources["*"] || current.failedSources[note.Source]) {
+			values = append(values, note)
+			seen[note.ID] = true
+		}
+	}
+	sortNotes(values)
+	return noteLayer{values: values, stale: true}
 }
 
 func (r renderer) display(patches []string) (string, error) {
-	outputs := make([]string, 0, len(r.specs))
-	if r.engine == "builtin" {
-		for _, spec := range r.specs {
-			output, err := spec.DisplayDiff(r.color)
-			if err != nil {
-				return "", err
-			}
-			if output != "" {
-				outputs = append(outputs, output)
-			}
-		}
-		return strings.Join(outputs, "\n\n"), nil
-	}
 	return engine.Patch(r.engine, strings.Join(patches, "\n"), r.engineOptions)
 }
 
@@ -470,15 +512,11 @@ func (r renderer) patches() ([]string, error) {
 	return out, nil
 }
 
-// draw folds every repository into one tree. Each file keeps the path its own
-// repository reported, prefixed with the repository's place under the
-// workspace, so two repositories holding the same file name stay apart and the
-// symbol and call layers keep their keys.
-func (r renderer) draw(patches []string, summary bool) string {
-	return diffview.Render(r.diffOptions(patches, summary))
+func (r renderer) diffOptions(patches []string, summary bool) diffview.Options {
+	return r.diffAnalysisContext(context.Background(), patches, summary).options
 }
 
-func (r renderer) diffOptions(patches []string, summary bool) diffview.Options {
+func (r renderer) diffAnalysisContext(ctx context.Context, patches []string, summary bool) diffAnalysis {
 	opts := diffview.Options{
 		Width:   r.columns(),
 		Symbols: map[string][]diffview.Symbol{},
@@ -488,13 +526,18 @@ func (r renderer) diffOptions(patches []string, summary bool) diffview.Options {
 		Summary: summary,
 		Unified: r.engineOptions.Layout == "unified",
 	}
+	groups := []provider.ChangeGroup{}
+	aliases := map[string]string{}
 	for i, patch := range patches {
-		files, rawPaths := normalizeDiffPaths(diffview.Parse(patch))
+		files, rawPaths := parseDiffFiles(patch)
 		if len(files) == 0 {
 			continue
 		}
 		spec := r.specs[i]
 		under := r.prefix(spec.Dir)
+		for oldPath, newPath := range diffPathAliases(patch) {
+			aliases[displayDiffPath(under+oldPath)] = displayDiffPath(under + newPath)
+		}
 		if under != "" {
 			opts.Pins[strings.TrimSuffix(under, "/")] = true
 		}
@@ -505,17 +548,28 @@ func (r renderer) diffOptions(patches []string, summary bool) diffview.Options {
 				touched = append(touched, rawPaths[file.Path])
 			}
 		}
-		syms, edges := r.layers(spec, touched, patches[i])
+		syms, edges, repoGroups := r.layers(ctx, spec, touched, patches[i])
+		groupPrefix := fmt.Sprintf("repo-%d:", i)
+		for _, group := range repoGroups {
+			group.ID = groupPrefix + group.ID
+			if group.ParentID != "" {
+				group.ParentID = groupPrefix + group.ParentID
+			}
+			for anchorIndex := range group.Anchors {
+				group.Anchors[anchorIndex].Path = under + group.Anchors[anchorIndex].Path
+			}
+			groups = append(groups, group)
+		}
 		for j := range files {
 			rawPath := rawPaths[files[j].Path]
-			at := under + files[j].Path
+			at := displayDiffPath(under + rawPath)
 			opts.Symbols[at] = syms[rawPath]
 			opts.Edges[at] = edges[rawPath]
 			files[j].Path = at
 			opts.Files = append(opts.Files, files[j])
 		}
 	}
-	return opts
+	return diffAnalysis{options: opts, groups: groups, aliases: aliases}
 }
 
 var (
@@ -526,38 +580,645 @@ var (
 	contextDel   = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 )
 
-// semanticContext adds only provider-derived context above an inline Git
-// patch. The patch already names every file and its churn, so repeating the
-// complete file tree there adds noise without adding information.
-func (r renderer) semanticContext(patches []string) string {
-	return semanticRows(r.diffOptions(patches, true))
+type semanticNode struct {
+	label    string
+	children []semanticNode
 }
 
-func semanticRows(opts diffview.Options) string {
-	rows := []string{}
+func semanticTreeRows(opts diffview.Options, notes noteLayer, width int) string {
+	files := make([]semanticNode, 0, len(opts.Files))
 	for index := range opts.Files {
 		file := &opts.Files[index]
-		symbols := opts.Symbols[file.Path]
-		edges := opts.Edges[file.Path]
-		for _, symbol := range symbols {
-			add, del, up, down, changed := semanticCounts(file, symbol, edges)
-			if !changed {
+		fileNotes := notesForPath(notes.values, file.Path)
+		claimed := make([]bool, len(fileNotes))
+		children := []semanticNode{}
+		for _, symbol := range opts.Symbols[file.Path] {
+			add, del, up, down, changed := semanticCounts(file, symbol, opts.Edges[file.Path])
+			symbolNotes := []semanticNode{}
+			for noteIndex, note := range fileNotes {
+				placement := noteDisplayPlacement(note)
+				if placement.Side == provider.NoteSideRight && placement.Line >= symbol.From && placement.Line <= symbol.To {
+					claimed[noteIndex] = true
+					symbolNotes = append(symbolNotes, semanticNoteNode(note, notes.stale))
+				}
+			}
+			if !changed && len(symbolNotes) == 0 {
 				continue
 			}
-			label := contextPath.Render(fmt.Sprintf("%s:%d", file.Path, symbol.From)) + " · " +
-				contextKind.Render(symbol.Kind+" ") + symbol.Name
-			rows = append(rows, label+semanticChurn(add, del, up, down))
+			kind := cleanNoteOneLine(symbol.Kind)
+			name := cleanNoteOneLine(symbol.Name)
+			label := contextKind.Render(kind+" ") + name + semanticChurn(add, del, up, down)
+			children = append(children, semanticNode{label: label, children: symbolNotes})
 		}
-		unmatched := unmatchedEdges(symbols, edges)
-		if len(unmatched) > 0 {
-			up, down := edgeCounts(unmatched)
-			rows = append(rows, contextPath.Render(file.Path)+" · file call changes"+semanticChurn(0, 0, up, down))
+		if edges := unmatchedEdges(opts.Symbols[file.Path], opts.Edges[file.Path]); len(edges) > 0 {
+			up, down := edgeCounts(edges)
+			children = append(children, semanticNode{label: "file call changes" + semanticChurn(0, 0, up, down)})
+		}
+		for noteIndex, note := range fileNotes {
+			if !claimed[noteIndex] {
+				children = append(children, semanticNoteNode(note, notes.stale))
+			}
+		}
+		if len(children) > 0 {
+			files = append(files, semanticNode{label: contextPath.Render(file.Path), children: children})
 		}
 	}
-	if len(rows) == 0 {
+	if len(files) == 0 {
 		return ""
 	}
-	return contextTitle.Render("context") + "\n" + strings.Join(rows, "\n")
+	rows := []string{contextTitle.Render("change context")}
+	appendSemanticNodes(&rows, files, "", width)
+	return strings.Join(rows, "\n")
+}
+
+func appendSemanticNodes(rows *[]string, nodes []semanticNode, prefix string, width int) {
+	for index, node := range nodes {
+		last := index == len(nodes)-1
+		connector := "├── "
+		continuation := "│   "
+		if last {
+			connector = "└── "
+			continuation = "    "
+		}
+		*rows = append(*rows, prefix+contextKind.Render(connector)+truncateTreeLabel(node.label, width-lipgloss.Width(prefix+connector)))
+		appendSemanticNodes(rows, node.children, prefix+contextKind.Render(continuation), width)
+	}
+}
+
+func semanticNoteNode(note provider.Note, stale bool) semanticNode {
+	children := []semanticNode{{label: cleanNoteOneLine(note.Summary)}}
+	if rationale := cleanNoteOneLine(note.Rationale); rationale != "" {
+		children = append(children, semanticNode{label: contextKind.Render(rationale)})
+	}
+	return semanticNode{label: noteTreeLabel(note, stale), children: children}
+}
+
+func truncateTreeLabel(label string, width int) string {
+	if width < 8 {
+		width = 8
+	}
+	return ansi.Truncate(label, width, "…")
+}
+
+type noteInsertion struct {
+	marker string
+	prefix string
+	side   string
+	notes  []provider.Note
+}
+
+type changeGroupPart struct {
+	path    []string
+	options diffview.Options
+	notes   []provider.Note
+}
+
+func renderTreeWithGroups(opts diffview.Options, groups []provider.ChangeGroup, notes noteLayer, width int) (string, error) {
+	parts := partitionChangeGroups(opts, groups, notes.values)
+	if len(parts) == 0 {
+		return renderTreeWithNotes(opts, notes, width)
+	}
+	combined := opts
+	combined.Files = nil
+	combined.Symbols = map[string][]diffview.Symbol{}
+	combined.Edges = map[string][]diffview.Edge{}
+	combined.Pins = map[string]bool{}
+	insertions := []noteInsertion{}
+	for _, part := range parts {
+		marked, partInsertions, err := markNoteRows(part.options, part.notes)
+		if err != nil {
+			return "", err
+		}
+		prefix := strings.Join(part.path, "/") + "/"
+		groupPath := ""
+		for _, component := range part.path {
+			if groupPath == "" {
+				groupPath = component
+			} else {
+				groupPath += "/" + component
+			}
+			combined.Pins[groupPath] = true
+		}
+		for _, file := range marked.Files {
+			oldPath := file.Path
+			file.Path = prefix + oldPath
+			combined.Files = append(combined.Files, file)
+			combined.Symbols[file.Path] = marked.Symbols[oldPath]
+			combined.Edges[file.Path] = marked.Edges[oldPath]
+		}
+		insertions = append(insertions, partInsertions...)
+	}
+	body, err := renderMarkedTree(combined, insertions, notes, width)
+	if err != nil {
+		return "", err
+	}
+	return fitTreeWidth(replaceTreeSummary(body, opts), width), nil
+}
+
+func partitionChangeGroups(opts diffview.Options, groups []provider.ChangeGroup, notes []provider.Note) []changeGroupPart {
+	if len(groups) == 0 {
+		return nil
+	}
+	ordered := append([]provider.ChangeGroup(nil), groups...)
+	sort.SliceStable(ordered, func(left, right int) bool {
+		if ordered[left].Order != ordered[right].Order {
+			return ordered[left].Order < ordered[right].Order
+		}
+		return ordered[left].ID < ordered[right].ID
+	})
+	byID := make(map[string]provider.ChangeGroup, len(ordered))
+	for _, group := range ordered {
+		byID[group.ID] = group
+	}
+	parts := make([]changeGroupPart, len(ordered)+1)
+	for index, group := range ordered {
+		parts[index] = changeGroupPart{path: changeGroupPath(group, byID), options: emptyDiffOptions(opts)}
+	}
+	parts[len(ordered)] = changeGroupPart{path: []string{"other changes"}, options: emptyDiffOptions(opts)}
+	for _, file := range opts.Files {
+		assigned := make([][]diffview.Hunk, len(parts))
+		for _, hunk := range file.Hunks {
+			part := len(ordered)
+			for index, group := range ordered {
+				if groupClaimsHunk(group, file.Path, hunk) {
+					part = index
+					break
+				}
+			}
+			assigned[part] = append(assigned[part], hunk)
+		}
+		if len(file.Hunks) == 0 {
+			part := len(ordered)
+			for index, group := range ordered {
+				if groupClaimsFile(group, file.Path) {
+					part = index
+					break
+				}
+			}
+			assigned[part] = []diffview.Hunk{}
+			addGroupedFile(&parts[part].options, file, assigned[part], opts)
+			continue
+		}
+		for index, hunks := range assigned {
+			if len(hunks) > 0 {
+				addGroupedFile(&parts[index].options, file, hunks, opts)
+			}
+		}
+	}
+	for _, note := range notes {
+		part := len(ordered)
+		placement := noteDisplayPlacement(note)
+		for index, group := range ordered {
+			if groupClaimsPlacement(group, placement) {
+				part = index
+				break
+			}
+		}
+		parts[part].notes = append(parts[part].notes, note)
+	}
+	visible := parts[:0]
+	for _, part := range parts {
+		if len(part.options.Files) > 0 || len(part.notes) > 0 {
+			visible = append(visible, part)
+		}
+	}
+	return visible
+}
+
+func emptyDiffOptions(opts diffview.Options) diffview.Options {
+	opts.Files = nil
+	opts.Symbols = map[string][]diffview.Symbol{}
+	opts.Edges = map[string][]diffview.Edge{}
+	opts.Pins = map[string]bool{}
+	return opts
+}
+
+func addGroupedFile(target *diffview.Options, file diffview.File, hunks []diffview.Hunk, source diffview.Options) {
+	file.Hunks = append([]diffview.Hunk(nil), hunks...)
+	file.Add, file.Del = 0, 0
+	for _, hunk := range hunks {
+		for _, line := range hunk.Lines {
+			switch line.Kind {
+			case '+':
+				file.Add++
+			case '-':
+				file.Del++
+			}
+		}
+	}
+	target.Files = append(target.Files, file)
+	for _, symbol := range source.Symbols[file.Path] {
+		for _, hunk := range hunks {
+			if hunkContainsRange(hunk, provider.NoteSideRight, symbol.From, symbol.To) {
+				target.Symbols[file.Path] = append(target.Symbols[file.Path], symbol)
+				break
+			}
+		}
+	}
+	for _, edge := range source.Edges[file.Path] {
+		for _, hunk := range hunks {
+			if hunkContainsRange(hunk, provider.NoteSideRight, edge.Line, edge.Line) {
+				target.Edges[file.Path] = append(target.Edges[file.Path], edge)
+				break
+			}
+		}
+	}
+}
+
+func changeGroupPath(group provider.ChangeGroup, groups map[string]provider.ChangeGroup) []string {
+	path := []string{cleanNoteOneLine(group.Title)}
+	for group.ParentID != "" {
+		parent, exists := groups[group.ParentID]
+		if !exists {
+			break
+		}
+		path = append([]string{cleanNoteOneLine(parent.Title)}, path...)
+		group = parent
+	}
+	return path
+}
+
+func groupClaimsFile(group provider.ChangeGroup, path string) bool {
+	for _, anchor := range group.Anchors {
+		if anchor.Line == 0 && sameDiffPath(anchor.Path, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func groupClaimsHunk(group provider.ChangeGroup, path string, hunk diffview.Hunk) bool {
+	for _, anchor := range group.Anchors {
+		if !sameDiffPath(anchor.Path, path) {
+			continue
+		}
+		if anchor.Line == 0 || hunkContainsRange(hunk, anchor.Side, anchor.StartLine, anchor.Line) {
+			return true
+		}
+	}
+	return false
+}
+
+func groupClaimsPlacement(group provider.ChangeGroup, placement provider.NotePlacement) bool {
+	for _, anchor := range group.Anchors {
+		if !sameDiffPath(anchor.Path, placement.Path) {
+			continue
+		}
+		if anchor.Line == 0 || anchor.Side == placement.Side && rangesOverlap(anchor.StartLine, anchor.Line, placement.StartLine, placement.Line) {
+			return true
+		}
+	}
+	return false
+}
+
+func hunkContainsRange(hunk diffview.Hunk, side string, start, end int) bool {
+	oldLine, newLine := hunk.OldAt, hunk.NewAt
+	for _, line := range hunk.Lines {
+		candidate := newLine
+		present := line.Kind != '-'
+		if side == provider.NoteSideLeft {
+			candidate, present = oldLine, line.Kind != '+'
+		}
+		if present && rangesOverlap(start, end, candidate, candidate) {
+			return true
+		}
+		switch line.Kind {
+		case '+':
+			newLine++
+		case '-':
+			oldLine++
+		default:
+			oldLine++
+			newLine++
+		}
+	}
+	return false
+}
+
+func rangesOverlap(leftStart, leftEnd, rightStart, rightEnd int) bool {
+	if leftStart == 0 {
+		leftStart = leftEnd
+	}
+	if rightStart == 0 {
+		rightStart = rightEnd
+	}
+	return leftStart <= rightEnd && rightStart <= leftEnd
+}
+
+func renderTreeWithNotes(opts diffview.Options, notes noteLayer, width int) (string, error) {
+	marked, insertions, err := markNoteRows(opts, notes.values)
+	if err != nil {
+		return "", err
+	}
+	return renderMarkedTree(marked, insertions, notes, width)
+}
+
+func renderMarkedTree(marked diffview.Options, insertions []noteInsertion, notes noteLayer, width int) (string, error) {
+	body := diffview.Render(marked)
+	if len(insertions) == 0 {
+		return fitTreeWidth(body, width), nil
+	}
+	lines := strings.Split(body, "\n")
+	byRow := map[int][]noteInsertion{}
+	for _, insertion := range insertions {
+		found := false
+		for row := range lines {
+			position := strings.Index(lines[row], insertion.marker)
+			if insertion.side == provider.NoteSideRight {
+				position = strings.LastIndex(lines[row], insertion.marker)
+			}
+			if position < 0 {
+				continue
+			}
+			found = true
+			prefix := lineNotePrefix(lines[row][:position])
+			if insertion.prefix == "file" {
+				prefix = fileNotePrefix(lines[row][:position])
+			}
+			lines[row] = strings.ReplaceAll(lines[row], insertion.marker, "")
+			insertion.prefix = prefix
+			byRow[row] = append(byRow[row], insertion)
+			break
+		}
+		if !found {
+			return "", errors.New("rendered diff omitted a note anchor")
+		}
+	}
+	output := make([]string, 0, len(lines)+len(notes.values)*3)
+	for row, line := range lines {
+		output = append(output, line)
+		for _, insertion := range byRow[row] {
+			output = append(output, embeddedNoteLines(insertion.prefix, insertion.notes, notes.stale, width)...)
+		}
+	}
+	return fitTreeWidth(strings.Join(output, "\n"), width), nil
+}
+
+func replaceTreeSummary(body string, original diffview.Options) string {
+	if body == "" {
+		return body
+	}
+	add, del := 0, 0
+	for _, file := range original.Files {
+		add += file.Add
+		del += file.Del
+	}
+	word := "files"
+	if len(original.Files) == 1 {
+		word = "file"
+	}
+	summary := contextTitle.Render(fmt.Sprintf("%d %s", len(original.Files), word)) + "   " +
+		contextAdd.Render(fmt.Sprintf("+%d", add)) + "  " + contextDel.Render(fmt.Sprintf("-%d", del))
+	if _, rest, found := strings.Cut(body, "\n"); found {
+		return summary + "\n" + rest
+	}
+	return summary
+}
+
+func markNoteRows(opts diffview.Options, notes []provider.Note) (diffview.Options, []noteInsertion, error) {
+	marked := cloneDiffOptions(opts)
+	insertions := []noteInsertion{}
+	matched := make([]bool, len(notes))
+	markerCount := 0
+	nextMarker := func() string {
+		markerCount++
+		return noteMarker(markerCount)
+	}
+	for fileIndex := range marked.Files {
+		file := &marked.Files[fileIndex]
+		for hunkIndex := range file.Hunks {
+			hunk := &file.Hunks[hunkIndex]
+			oldLine, newLine := hunk.OldAt, hunk.NewAt
+			for lineIndex := range hunk.Lines {
+				line := &hunk.Lines[lineIndex]
+				for _, side := range []string{provider.NoteSideLeft, provider.NoteSideRight} {
+					group := []provider.Note{}
+					for noteIndex, note := range notes {
+						if matched[noteIndex] || opts.Stat || !sameDiffPath(noteDisplayPlacement(note).Path, file.Path) {
+							continue
+						}
+						placement := noteDisplayPlacement(note)
+						if placement.Side == side && placement.Quality == provider.PlacementExact &&
+							noteLineMatches(placement, line.Kind, oldLine, newLine) {
+							matched[noteIndex] = true
+							group = append(group, note)
+						}
+					}
+					if len(group) > 0 {
+						marker := nextMarker()
+						line.Text = marker + line.Text
+						insertions = append(insertions, noteInsertion{marker: marker, side: side, notes: group})
+					}
+				}
+				switch line.Kind {
+				case '+':
+					newLine++
+				case '-':
+					oldLine++
+				default:
+					oldLine++
+					newLine++
+				}
+			}
+		}
+		fallback := []provider.Note{}
+		for noteIndex, note := range notes {
+			if !matched[noteIndex] && sameDiffPath(noteDisplayPlacement(note).Path, file.Path) {
+				matched[noteIndex] = true
+				fallback = append(fallback, note)
+			}
+		}
+		if len(fallback) > 0 {
+			marker := nextMarker()
+			oldPath := file.Path
+			file.Path = markFilePath(file.Path, marker)
+			marked.Symbols[file.Path] = marked.Symbols[oldPath]
+			marked.Edges[file.Path] = marked.Edges[oldPath]
+			delete(marked.Symbols, oldPath)
+			delete(marked.Edges, oldPath)
+			insertions = append(insertions, noteInsertion{marker: marker, prefix: "file", notes: fallback})
+		}
+	}
+	for noteIndex, note := range notes {
+		if matched[noteIndex] {
+			continue
+		}
+		marker := nextMarker()
+		path := noteDisplayPlacement(note).Path
+		marked.Files = append(marked.Files, diffview.File{Path: markFilePath(displayDiffPath(path), marker)})
+		insertions = append(insertions, noteInsertion{marker: marker, prefix: "file", notes: []provider.Note{note}})
+	}
+	return marked, insertions, nil
+}
+
+func cloneDiffOptions(opts diffview.Options) diffview.Options {
+	clone := opts
+	clone.Files = append([]diffview.File(nil), opts.Files...)
+	clone.Symbols = make(map[string][]diffview.Symbol, len(opts.Symbols))
+	clone.Edges = make(map[string][]diffview.Edge, len(opts.Edges))
+	for path, symbols := range opts.Symbols {
+		clone.Symbols[path] = append([]diffview.Symbol(nil), symbols...)
+	}
+	for path, edges := range opts.Edges {
+		clone.Edges[path] = append([]diffview.Edge(nil), edges...)
+	}
+	for fileIndex := range clone.Files {
+		clone.Files[fileIndex].Hunks = append([]diffview.Hunk(nil), opts.Files[fileIndex].Hunks...)
+		for hunkIndex := range clone.Files[fileIndex].Hunks {
+			original := opts.Files[fileIndex].Hunks[hunkIndex].Lines
+			clone.Files[fileIndex].Hunks[hunkIndex].Lines = append([]diffview.Line(nil), original...)
+		}
+	}
+	return clone
+}
+
+func noteLineMatches(placement provider.NotePlacement, kind byte, oldLine, newLine int) bool {
+	switch placement.Side {
+	case provider.NoteSideLeft:
+		return kind != '+' && placement.Line == oldLine
+	case provider.NoteSideRight:
+		return kind != '-' && placement.Line == newLine
+	default:
+		return false
+	}
+}
+
+func noteMarker(index int) string {
+	// Git forbids NUL in paths and file contents. The two zero-width variation
+	// selectors make each marker distinct without affecting terminal layout.
+	index--
+	return "\x00" + string(rune(0xe0100+index/240)) + string(rune(0xe0100+index%240))
+}
+
+func markFilePath(path, marker string) string {
+	index := strings.LastIndexByte(path, '/') + 1
+	return path[:index] + marker + path[index:]
+}
+
+func lineNotePrefix(beforeMarker string) string {
+	plain := ansi.Strip(stripNoteMarkers(beforeMarker))
+	if strings.Contains(plain, " │ ") {
+		return trimASCIISuffix(plain, 5) + strings.Repeat(" ", 5)
+	}
+	return trimASCIISuffix(plain, 7) + strings.Repeat(" ", 5)
+}
+
+func fileNotePrefix(beforeMarker string) string {
+	plain := ansi.Strip(stripNoteMarkers(beforeMarker))
+	for _, branch := range []struct{ connector, guide string }{{"├── ", "│   "}, {"└── ", "    "}} {
+		if strings.HasSuffix(plain, branch.connector) {
+			return strings.TrimSuffix(plain, branch.connector) + branch.guide + "│ "
+		}
+	}
+	return "│ "
+}
+
+func stripNoteMarkers(value string) string {
+	return strings.Map(func(character rune) rune {
+		if character == 0 || character >= 0xe0100 && character <= 0xe01ef {
+			return -1
+		}
+		return character
+	}, value)
+}
+
+func trimASCIISuffix(value string, count int) string {
+	if count > len(value) {
+		return ""
+	}
+	return value[:len(value)-count]
+}
+
+func fitTreeWidth(body string, width int) string {
+	width = max(20, width)
+	lines := strings.Split(body, "\n")
+	for index := range lines {
+		lines[index] = ansi.Truncate(lines[index], width, "…")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func embeddedNoteLines(prefix string, notes []provider.Note, stale bool, width int) []string {
+	rows := []string{}
+	for index, note := range notes {
+		last := index == len(notes)-1
+		connector := "├── "
+		continuation := "│   "
+		if last {
+			connector = "└── "
+			continuation = "    "
+		}
+		headPrefix := prefix + contextKind.Render(connector)
+		rows = append(rows, headPrefix+truncateTreeLabel(noteTreeLabel(note, stale), width-lipgloss.Width(ansi.Strip(headPrefix))))
+		bodyPrefix := prefix + contextKind.Render(continuation)
+		rows = append(rows, bodyPrefix+truncateTreeLabel(cleanNoteOneLine(note.Summary), width-lipgloss.Width(ansi.Strip(bodyPrefix))))
+		if rationale := cleanNoteOneLine(note.Rationale); rationale != "" {
+			rows = append(rows, bodyPrefix+contextKind.Render(truncateTreeLabel(rationale, width-lipgloss.Width(ansi.Strip(bodyPrefix)))))
+		}
+	}
+	return rows
+}
+
+func noteTreeLabel(note provider.Note, stale bool) string {
+	placement := noteDisplayPlacement(note)
+	state := note.State
+	if placement.Quality != provider.PlacementExact {
+		state += "/" + placement.Quality
+	}
+	if stale {
+		state += "/refresh-pending"
+	}
+	location := "file"
+	if placement.Line > 0 {
+		location = fmt.Sprintf("line %d@%s", placement.Line, strings.ToLower(placement.Side))
+		if placement.StartLine > 0 {
+			location = fmt.Sprintf("lines %d@%s-%s", placement.StartLine, strings.ToLower(placement.StartSide), strings.TrimPrefix(location, "line "))
+		}
+	}
+	return contextTitle.Render("●") + " " + contextPath.Render(location) + " · " +
+		contextKind.Render(state+" ") + cleanNoteOneLine(note.Author) + " via " + cleanNoteOneLine(note.Source)
+}
+
+func noteDisplayPlacement(note provider.Note) provider.NotePlacement {
+	if note.Placement.Quality != provider.PlacementOrphan {
+		return note.Placement
+	}
+	return provider.NotePlacement{
+		Path: note.Anchor.Path, Side: note.Anchor.Side, StartSide: note.Anchor.StartSide,
+		StartLine: note.Anchor.StartLine, Line: note.Anchor.Line, Quality: provider.PlacementOrphan,
+	}
+}
+
+func notesForPath(notes []provider.Note, path string) []provider.Note {
+	selected := []provider.Note{}
+	for _, note := range notes {
+		notePath, _ := notePosition(note)
+		if sameDiffPath(notePath, path) {
+			selected = append(selected, note)
+		}
+	}
+	return selected
+}
+
+func diffFileForPath(files []diffview.File, path string) (diffview.File, bool) {
+	for _, file := range files {
+		if sameDiffPath(path, file.Path) {
+			return file, true
+		}
+	}
+	return diffview.File{}, false
+}
+
+func sameDiffPath(left, right string) bool {
+	decode := func(path string) string {
+		if strings.HasPrefix(path, `"`) && strings.HasSuffix(path, `"`) {
+			if decoded, err := strconv.Unquote(path); err == nil {
+				path = strings.TrimPrefix(decoded, "b/")
+			}
+		}
+		return filepath.ToSlash(filepath.Clean(path))
+	}
+	return decode(left) == decode(right)
 }
 
 func semanticCounts(file *diffview.File, symbol diffview.Symbol, edges []diffview.Edge) (add, del, up, down int, changed bool) {
@@ -652,18 +1313,124 @@ func countLabel(count int, singular string) string {
 func normalizeDiffPaths(files []diffview.File) ([]diffview.File, map[string]string) {
 	rawPaths := make(map[string]string, len(files))
 	for index := range files {
-		displayPath := files[index].Path
-		rawPath := displayPath
-		if strings.HasPrefix(displayPath, `"`) && strings.HasSuffix(displayPath, `"`) {
-			if decoded, err := strconv.Unquote(displayPath); err == nil {
+		rawPath := files[index].Path
+		if strings.HasPrefix(rawPath, `"`) && strings.HasSuffix(rawPath, `"`) {
+			if decoded, err := strconv.Unquote(rawPath); err == nil {
 				rawPath = strings.TrimPrefix(decoded, "b/")
-				displayPath = strconv.Quote(rawPath)
 			}
 		}
+		displayPath := displayDiffPath(rawPath)
 		files[index].Path = displayPath
 		rawPaths[displayPath] = rawPath
 	}
 	return files, rawPaths
+}
+
+func parseDiffFiles(patch string) ([]diffview.File, map[string]string) {
+	sections := splitPatchFiles(patch)
+	if len(sections) == 0 {
+		files, paths := normalizeDiffPaths(diffview.Parse(patch))
+		return sanitizeDiffFiles(files), paths
+	}
+	files := make([]diffview.File, 0, len(sections))
+	rawPaths := make(map[string]string, len(sections))
+	for _, section := range sections {
+		rawPath := section.newPath
+		if rawPath == "" {
+			rawPath = section.oldPath
+		}
+		if rawPath == "" {
+			continue
+		}
+		parsed := diffview.Parse(section.patch)
+		file := diffview.File{}
+		if len(parsed) > 0 {
+			file = parsed[0]
+		}
+		file = sanitizeDiffFiles([]diffview.File{file})[0]
+		displayPath := displayDiffPath(rawPath)
+		file.Path = displayPath
+		files = append(files, file)
+		rawPaths[displayPath] = rawPath
+	}
+	return files, rawPaths
+}
+
+func sanitizeDiffFiles(files []diffview.File) []diffview.File {
+	for fileIndex := range files {
+		for hunkIndex := range files[fileIndex].Hunks {
+			for lineIndex := range files[fileIndex].Hunks[hunkIndex].Lines {
+				line := &files[fileIndex].Hunks[hunkIndex].Lines[lineIndex]
+				line.Text = sanitizeDiffText(line.Text)
+			}
+		}
+	}
+	return files
+}
+
+func sanitizeDiffText(value string) string {
+	return strings.Map(func(character rune) rune {
+		if character != '\t' && unicode.IsControl(character) {
+			return -1
+		}
+		return character
+	}, value)
+}
+
+func notePathsInPatch(patch string) []string {
+	seen := map[string]bool{}
+	paths := []string{}
+	for _, section := range splitPatchFiles(patch) {
+		for _, path := range []string{section.oldPath, section.newPath} {
+			if path != "" && !seen[path] {
+				seen[path] = true
+				paths = append(paths, path)
+			}
+		}
+	}
+	return paths
+}
+
+func diffPathAliases(patch string) map[string]string {
+	aliases := map[string]string{}
+	for _, section := range splitPatchFiles(patch) {
+		if section.oldPath != "" && section.newPath != "" {
+			aliases[section.oldPath] = section.newPath
+		}
+	}
+	return aliases
+}
+
+func remapNotePaths(layer noteLayer, aliases map[string]string) noteLayer {
+	if len(aliases) == 0 || len(layer.values) == 0 {
+		return layer
+	}
+	values := append([]provider.Note(nil), layer.values...)
+	remap := func(path string) string {
+		for oldPath, newPath := range aliases {
+			if sameDiffPath(path, oldPath) {
+				return newPath
+			}
+		}
+		return path
+	}
+	for index := range values {
+		values[index].Anchor.Path = remap(values[index].Anchor.Path)
+		if values[index].Placement.Path != "" {
+			values[index].Placement.Path = remap(values[index].Placement.Path)
+		}
+	}
+	layer.values = values
+	return layer
+}
+
+func displayDiffPath(path string) string {
+	for _, character := range path {
+		if character < 0x20 || character > 0x7e || character == '"' || character == '\\' {
+			return strconv.Quote(path)
+		}
+	}
+	return path
 }
 
 // One repository renders under its own paths, so a single repository reads
@@ -679,12 +1446,13 @@ func (r renderer) prefix(dir string) string {
 	return rel + "/"
 }
 
-func (r renderer) layers(spec source.Spec, touched []string, patch string) (map[string][]diffview.Symbol, map[string][]diffview.Edge) {
+func (r renderer) layers(ctx context.Context, spec source.Spec, touched []string, patch string) (map[string][]diffview.Symbol, map[string][]diffview.Edge, []provider.ChangeGroup) {
 	touched = append([]string(nil), touched...)
 	sort.Strings(touched)
 
 	syms := map[string][]diffview.Symbol{}
 	edges := map[string][]diffview.Edge{}
+	groups := []provider.ChangeGroup{}
 	request := provider.Request{
 		Directory:   spec.Dir,
 		Files:       touched,
@@ -695,9 +1463,7 @@ func (r renderer) layers(spec source.Spec, touched []string, patch string) (map[
 	}
 	for _, configured := range r.providers {
 		if r.syms && provider.Supports(configured.Manifest, provider.ActionSymbols) {
-			ctx, cancel := context.WithTimeout(context.Background(), r.budget)
 			response, err := provider.Run(ctx, configured, provider.ActionSymbols, request, r.providerCache)
-			cancel()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "changes: %v\n", err)
 			} else {
@@ -705,9 +1471,7 @@ func (r renderer) layers(spec source.Spec, touched []string, patch string) (map[
 			}
 		}
 		if r.calls && provider.Supports(configured.Manifest, provider.ActionCalls) {
-			ctx, cancel := context.WithTimeout(context.Background(), r.budget)
 			response, err := provider.Run(ctx, configured, provider.ActionCalls, request, r.providerCache)
-			cancel()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "changes: %v\n", err)
 			} else {
@@ -715,7 +1479,48 @@ func (r renderer) layers(spec source.Spec, touched []string, patch string) (map[
 			}
 		}
 	}
-	return syms, edges
+	if r.groups {
+		configured, found, err := selectGroupProvider(r.providers, r.groupProvider)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "changes: %v\n", err)
+		} else if found {
+			groupRequest := request
+			groupRequest.Patch = patch
+			response, runErr := provider.Run(ctx, configured, provider.ActionGroups, groupRequest, r.providerCache)
+			if runErr != nil {
+				fmt.Fprintf(os.Stderr, "changes: %v\n", runErr)
+			} else {
+				groups = response.Groups
+			}
+		}
+	}
+	return syms, edges, groups
+}
+
+func selectGroupProvider(providers []provider.LoadedManifest, name string) (provider.LoadedManifest, bool, error) {
+	for _, configured := range providers {
+		if !provider.Supports(configured.Manifest, provider.ActionGroups) {
+			continue
+		}
+		if name == "" || configured.Manifest.Name == name {
+			return configured, true, nil
+		}
+	}
+	if name != "" {
+		return provider.LoadedManifest{}, false, fmt.Errorf("group provider %q was not found", name)
+	}
+	return provider.LoadedManifest{}, false, nil
+}
+
+func validateGroupSelection(engineName string, enabled bool, name string, providers []provider.LoadedManifest) error {
+	if !enabled || name == "" {
+		return nil
+	}
+	if engineName != "builtin" {
+		return errors.New("logical grouping requires the builtin diff engine")
+	}
+	_, _, err := selectGroupProvider(providers, name)
+	return err
 }
 
 func mergeSymbols(target, source map[string][]diffview.Symbol) {
@@ -742,7 +1547,7 @@ func (r renderer) follow(every time.Duration) error {
 	lastPatches := ""
 	lastFrame := ""
 	lastNoteRead := time.Time{}
-	noteSummary := ""
+	notes := noteLayer{}
 	initialized := false
 	for {
 		patches, err := r.patches()
@@ -753,16 +1558,13 @@ func (r renderer) follow(every time.Duration) error {
 		patchChanged := !initialized || currentPatches != lastPatches
 		notesDue := noteRefreshDue(r.notes, lastNoteRead, time.Now(), r.noteInterval)
 		if patchChanged || notesDue {
-			notesForFrame := noteSummary
-			if patchChanged && !notesDue {
-				notesForFrame = staleNoteSummary(noteSummary)
-			}
+			notesForFrame := noteLayerForFrame(notes, patchChanged, notesDue)
 			out, refreshedNotes, err := r.renderPatchesWithNotes(patches, notesForFrame, notesDue)
 			if err != nil {
 				return err
 			}
 			if notesDue {
-				noteSummary = refreshedNotes
+				notes = refreshedNotes
 			}
 			if out == "" {
 				out = "changes: nothing changed"
@@ -784,15 +1586,11 @@ func (r renderer) follow(every time.Duration) error {
 	}
 }
 
-func staleNoteSummary(summary string) string {
-	if summary == "" {
-		return ""
+func noteLayerForFrame(notes noteLayer, patchChanged, notesDue bool) noteLayer {
+	if patchChanged && !notesDue {
+		return noteLayer{}
 	}
-	_, body, found := strings.Cut(summary, "\n")
-	if !found {
-		body = summary
-	}
-	return contextTitle.Render("notes (previous comparison; refresh pending)") + "\n" + body
+	return notes
 }
 
 func noteRefreshDue(enabled bool, lastRead, now time.Time, interval time.Duration) bool {
@@ -905,7 +1703,7 @@ func runRender(args []string) {
 	if flags.NArg() != 0 {
 		fail(fmt.Errorf("render reads a patch from standard input"))
 	}
-	patch, err := io.ReadAll(os.Stdin)
+	patch, err := readPatch(os.Stdin, source.MaxPatchBytes)
 	if err != nil {
 		fail(err)
 	}
@@ -925,6 +1723,17 @@ func runRender(args []string) {
 	if out != "" {
 		fmt.Println(out)
 	}
+}
+
+func readPatch(reader io.Reader, limit int64) ([]byte, error) {
+	patch, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(patch)) > limit {
+		return nil, fmt.Errorf("input patch exceeds %d bytes", limit)
+	}
+	return patch, nil
 }
 
 func runCompletion(args []string) {
@@ -959,7 +1768,7 @@ func runCompletionValues(args []string) {
 		values = append(values, gitCompletionValues("ls-files", "-z", "--cached", "--others", "--exclude-standard")...)
 	case "paths":
 		values = gitCompletionValues("ls-files", "-z", "--cached", "--others", "--exclude-standard")
-	case "providers", "note-readers", "note-writers":
+	case "providers", "group-providers", "note-generators", "note-readers", "note-writers":
 		configured, err := appconfig.Load(argumentValue(splitCompletionContext(context), "config"))
 		if err != nil {
 			return
@@ -970,8 +1779,12 @@ func runCompletionValues(args []string) {
 		}
 		for _, candidate := range discovery.Providers {
 			action := ""
-			if args[0] == "note-readers" {
+			if args[0] == "group-providers" {
+				action = provider.ActionGroups
+			} else if args[0] == "note-readers" {
 				action = provider.ActionNotes
+			} else if args[0] == "note-generators" {
+				action = provider.ActionNotesGenerate
 			} else if args[0] == "note-writers" {
 				action = provider.ActionNotesCreate
 			}
@@ -1081,25 +1894,26 @@ func gitCompletionOutput(args ...string) ([]byte, bool) {
 func commandMetadata() completion.Command {
 	return completion.Command{
 		Name:              "changes",
-		Synopsis:          "Render Git changes with symbol, call, and note context",
+		Synopsis:          "Render Git changes with logical groups, symbols, calls, and notes",
 		CompletionCommand: completionValuesInvocation("repository"),
 		LongDescription: `Refs follow git diff: none is the index against the working tree, one is that ref
 against the working tree, and two compare the trees. A from of the form a..b is
 split into two refs.
 
--r reads every repository under the workspace. The workspace is
-$SYSINIT_WORKSPACE when the working directory sits inside it, then the Git top
-level, then the working directory. Each repository's files hang under its own
-name.`,
+-r reads every repository under the workspace. Use -root to select its
+boundary. Without -root, Changes uses the Git top level, then the working
+directory. Each repository's files hang under its own name.`,
 		Flags: []completion.Flag{
 			{Name: "budget", Description: "Analysis time budget", Value: true},
 			{Name: "color", Description: "Color output", Value: true, Values: []string{"auto", "always", "never"}},
 			{Name: "config", Description: "YAML configuration file", Value: true},
 			{Name: "engine", Description: "Patch display engine", Value: true, Values: engine.PatchNames},
 			{Name: "filter", Description: "Standard-input patch filter", Value: true},
+			{Name: "group-provider", Description: "Logical change-group provider", Value: true, CompletionCommand: contextualCompletionValuesInvocation("group-providers")},
 			{Name: "interval", Description: "Watch interval", Value: true},
 			{Name: "layout", Description: "Diff layout", Value: true, Values: []string{"unified", "side-by-side"}},
 			{Name: "no-calls", Description: "Skip call analysis"},
+			{Name: "no-groups", Description: "Skip logical change grouping"},
 			{Name: "no-notes", Description: "Skip diff notes"},
 			{Name: "no-symbols", Description: "Skip symbol analysis"},
 			{Name: "recursive", Short: "r", Description: "Read all workspace repositories"},
@@ -1172,6 +1986,21 @@ name.`,
 							{Name: "side", Description: "Diff side", Value: true, Values: []string{"left", "right"}},
 							{Name: "staged", Description: "Compare the index"},
 							{Name: "start-line", Description: "First line of a multi-line range", Value: true},
+							{Name: "to", Description: "Right revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+						},
+					},
+					{
+						Name:     "generate",
+						Synopsis: "Generate notes with a provider and save them",
+						Flags: []completion.Flag{
+							{Name: "commit", Description: "First-parent commit comparison", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+							{Name: "config", Description: "YAML configuration file", Value: true},
+							{Name: "from", Description: "Left revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+							{Name: "json", Description: "Print generated notes as JSON"},
+							{Name: "provider", Description: "Note generator provider", Value: true, CompletionCommand: contextualCompletionValuesInvocation("note-generators")},
+							{Name: "session", Description: "Harness session identifier", Value: true},
+							{Name: "staged", Description: "Compare the index"},
+							{Name: "store", Description: "Writable note provider", Value: true, CompletionCommand: contextualCompletionValuesInvocation("note-writers")},
 							{Name: "to", Description: "Right revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
 						},
 					},

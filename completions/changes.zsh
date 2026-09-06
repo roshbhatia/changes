@@ -11,89 +11,89 @@ __changes_completion_values_1() {
 }
 __changes_completion_values_2() {
   local -a values
-  values=( 'unified' 'side-by-side')
+  values=()
+  values+=("${(@f)$('changes' '__values' 'group-providers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
   compadd -a values
 }
 __changes_completion_values_3() {
+  local -a values
+  values=( 'unified' 'side-by-side')
+  compadd -a values
+}
+__changes_completion_values_4() {
   local -a values
   values=( 'completion' 'difftool' 'render' 'generate' 'note' 'provider')
   values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
   compadd -a values
 }
-__changes_completion_values_4() {
+__changes_completion_values_5() {
   local -a values
   values=()
   values+=("${(@f)$('changes' '__values' 'paths' 2>/dev/null)}")
   compadd -a values
 }
-__changes_completion_values_5() {
-  local -a values
-  values=( 'auto' 'always' 'never')
-  compadd -a values
-}
 __changes_completion_values_6() {
   local -a values
-  values=( 'builtin' 'difftool')
+  values=( 'auto' 'always' 'never')
   compadd -a values
 }
 __changes_completion_values_7() {
   local -a values
-  values=( 'unified' 'side-by-side')
+  values=( 'builtin' 'difftool')
   compadd -a values
 }
 __changes_completion_values_8() {
   local -a values
-  values=( 'auto' 'always' 'never')
+  values=( 'unified' 'side-by-side')
   compadd -a values
 }
 __changes_completion_values_9() {
   local -a values
-  values=( 'builtin' 'filter')
+  values=( 'auto' 'always' 'never')
   compadd -a values
 }
 __changes_completion_values_10() {
   local -a values
-  values=( 'unified' 'side-by-side')
+  values=( 'builtin' 'filter')
   compadd -a values
 }
 __changes_completion_values_11() {
   local -a values
-  values=()
-  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  values=( 'unified' 'side-by-side')
   compadd -a values
 }
 __changes_completion_values_12() {
   local -a values
   values=()
-  values+=("${(@f)$('changes' '__values' 'paths' 2>/dev/null)}")
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
   compadd -a values
 }
 __changes_completion_values_13() {
   local -a values
   values=()
-  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  values+=("${(@f)$('changes' '__values' 'paths' 2>/dev/null)}")
   compadd -a values
 }
 __changes_completion_values_14() {
   local -a values
-  values=( 'agent' 'user')
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
   compadd -a values
 }
 __changes_completion_values_15() {
+  local -a values
+  values=( 'agent' 'user')
+  compadd -a values
+}
+__changes_completion_values_16() {
   local -a values
   values=()
   values+=("${(@f)$('changes' '__values' 'note-writers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
   compadd -a values
 }
-__changes_completion_values_16() {
-  local -a values
-  values=( 'left' 'right')
-  compadd -a values
-}
 __changes_completion_values_17() {
   local -a values
-  values=()
-  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  values=( 'left' 'right')
   compadd -a values
 }
 __changes_completion_values_18() {
@@ -111,22 +111,58 @@ __changes_completion_values_19() {
 __changes_completion_values_20() {
   local -a values
   values=()
-  values+=("${(@f)$('changes' '__values' 'note-readers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
   compadd -a values
 }
 __changes_completion_values_21() {
   local -a values
   values=()
-  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  values+=("${(@f)$('changes' '__values' 'note-generators' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
   compadd -a values
 }
 __changes_completion_values_22() {
   local -a values
   values=()
-  values+=("${(@f)$('changes' '__values' 'providers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
+  values+=("${(@f)$('changes' '__values' 'note-writers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
   compadd -a values
 }
 __changes_completion_values_23() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_24() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_25() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_26() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'note-readers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_27() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'repository' 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_28() {
+  local -a values
+  values=()
+  values+=("${(@f)$('changes' '__values' 'providers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
+  compadd -a values
+}
+__changes_completion_values_29() {
   local -a values
   values=()
   values+=("${(@f)$('changes' '__values' 'providers' "${BUFFER[1,CURSOR]}" 2>/dev/null)}")
@@ -161,6 +197,8 @@ _changes() {
       ':--engine='*) continue ;;
       ':--filter') consume_value=1; continue ;;
       ':--filter='*) continue ;;
+      ':--group-provider') consume_value=1; continue ;;
+      ':--group-provider='*) continue ;;
       ':--interval') consume_value=1; continue ;;
       ':--interval='*) continue ;;
       ':--layout') consume_value=1; continue ;;
@@ -223,6 +261,20 @@ _changes() {
       'note add:--start-line='*) continue ;;
       'note add:--to') consume_value=1; continue ;;
       'note add:--to='*) continue ;;
+      'note generate:--commit') consume_value=1; continue ;;
+      'note generate:--commit='*) continue ;;
+      'note generate:--config') consume_value=1; continue ;;
+      'note generate:--config='*) continue ;;
+      'note generate:--from') consume_value=1; continue ;;
+      'note generate:--from='*) continue ;;
+      'note generate:--provider') consume_value=1; continue ;;
+      'note generate:--provider='*) continue ;;
+      'note generate:--session') consume_value=1; continue ;;
+      'note generate:--session='*) continue ;;
+      'note generate:--store') consume_value=1; continue ;;
+      'note generate:--store='*) continue ;;
+      'note generate:--to') consume_value=1; continue ;;
+      'note generate:--to='*) continue ;;
       'note list:--commit') consume_value=1; continue ;;
       'note list:--commit='*) continue ;;
       'note list:--config') consume_value=1; continue ;;
@@ -245,6 +297,7 @@ _changes() {
       ':generate') context='generate' ;;
       ':note') context='note' ;;
       'note:add') context='note add' ;;
+      'note:generate') context='note generate' ;;
       'note:list') context='note list' ;;
       ':provider') context='provider' ;;
       'provider:list') context='provider list' ;;
@@ -259,9 +312,11 @@ _changes() {
         '--config[YAML configuration file]:value:' \
         '--engine[Patch display engine]:value:__changes_completion_values_1' \
         '--filter[Standard-input patch filter]:value:' \
+        '--group-provider[Logical change-group provider]:value:__changes_completion_values_2' \
         '--interval[Watch interval]:value:' \
-        '--layout[Diff layout]:value:__changes_completion_values_2' \
+        '--layout[Diff layout]:value:__changes_completion_values_3' \
         '--no-calls[Skip call analysis]' \
+        '--no-groups[Skip logical change grouping]' \
         '--no-notes[Skip diff notes]' \
         '--no-symbols[Skip symbol analysis]' \
         '(-r)--recursive[Read all workspace repositories]' \
@@ -272,7 +327,7 @@ _changes() {
         '--version[Print the Changes version]' \
         '(-w)--watch[Watch for changes]' \
         '--width[Render width]:value:' \
-        '*:argument:__changes_completion_values_3'
+        '*:argument:__changes_completion_values_4'
 
       ;;
     'completion')
@@ -281,22 +336,22 @@ _changes() {
       ;;
     'difftool')
       _arguments \
-        '--color[Color output]:value:__changes_completion_values_5' \
+        '--color[Color output]:value:__changes_completion_values_6' \
         '--config[YAML configuration file]:value:' \
-        '--engine[File comparison engine]:value:__changes_completion_values_6' \
+        '--engine[File comparison engine]:value:__changes_completion_values_7' \
         '--difftool[Git-compatible difftool executable]:value:' \
-        '--layout[Diff layout]:value:__changes_completion_values_7' \
+        '--layout[Diff layout]:value:__changes_completion_values_8' \
         '--width[Render width]:value:' \
-        '*:argument:__changes_completion_values_4'
+        '*:argument:__changes_completion_values_5'
 
       ;;
     'render')
       _arguments \
-        '--color[Color output]:value:__changes_completion_values_8' \
+        '--color[Color output]:value:__changes_completion_values_9' \
         '--config[YAML configuration file]:value:' \
-        '--engine[Patch display engine]:value:__changes_completion_values_9' \
+        '--engine[Patch display engine]:value:__changes_completion_values_10' \
         '--filter[Standard-input patch filter]:value:' \
-        '--layout[Diff layout]:value:__changes_completion_values_10' \
+        '--layout[Diff layout]:value:__changes_completion_values_11' \
         '--width[Render width]:value:' \
         '*:argument:'
 
@@ -309,39 +364,53 @@ _changes() {
       ;;
     'note')
       _arguments \
-        '2:command:(add list)'
+        '2:command:(add generate list)'
 
       ;;
     'note add')
       _arguments \
         '--author[Note author]:value:' \
-        '--commit[First-parent commit comparison]:value:__changes_completion_values_11' \
+        '--commit[First-parent commit comparison]:value:__changes_completion_values_12' \
         '--config[YAML configuration file]:value:' \
-        '--file[Repository file to annotate]:value:__changes_completion_values_12' \
-        '--from[Left revision]:value:__changes_completion_values_13' \
+        '--file[Repository file to annotate]:value:__changes_completion_values_13' \
+        '--from[Left revision]:value:__changes_completion_values_14' \
         '--json[Print the created note as JSON]' \
         '--line[Last line of the note range]:value:' \
         '--message[Summary and optional rationale]:value:' \
         '--message-file[Read note text from a file or standard input]:value:' \
-        '--origin[Author kind]:value:__changes_completion_values_14' \
-        '--provider[Writable note provider]:value:__changes_completion_values_15' \
+        '--origin[Author kind]:value:__changes_completion_values_15' \
+        '--provider[Writable note provider]:value:__changes_completion_values_16' \
         '--session[Harness session identifier]:value:' \
-        '--side[Diff side]:value:__changes_completion_values_16' \
+        '--side[Diff side]:value:__changes_completion_values_17' \
         '--staged[Compare the index]' \
         '--start-line[First line of a multi-line range]:value:' \
-        '--to[Right revision]:value:__changes_completion_values_17' \
+        '--to[Right revision]:value:__changes_completion_values_18' \
+        '*:argument:'
+
+      ;;
+    'note generate')
+      _arguments \
+        '--commit[First-parent commit comparison]:value:__changes_completion_values_19' \
+        '--config[YAML configuration file]:value:' \
+        '--from[Left revision]:value:__changes_completion_values_20' \
+        '--json[Print generated notes as JSON]' \
+        '--provider[Note generator provider]:value:__changes_completion_values_21' \
+        '--session[Harness session identifier]:value:' \
+        '--staged[Compare the index]' \
+        '--store[Writable note provider]:value:__changes_completion_values_22' \
+        '--to[Right revision]:value:__changes_completion_values_23' \
         '*:argument:'
 
       ;;
     'note list')
       _arguments \
-        '--commit[First-parent commit comparison]:value:__changes_completion_values_18' \
+        '--commit[First-parent commit comparison]:value:__changes_completion_values_24' \
         '--config[YAML configuration file]:value:' \
-        '--from[Left revision]:value:__changes_completion_values_19' \
+        '--from[Left revision]:value:__changes_completion_values_25' \
         '--json[Print JSON]' \
-        '--provider[Note provider]:value:__changes_completion_values_20' \
+        '--provider[Note provider]:value:__changes_completion_values_26' \
         '--staged[Compare the index]' \
-        '--to[Right revision]:value:__changes_completion_values_21' \
+        '--to[Right revision]:value:__changes_completion_values_27' \
         '*:argument:'
 
       ;;
@@ -354,14 +423,14 @@ _changes() {
       _arguments \
         '--config[YAML configuration file]:value:' \
         '--json[Print JSON]' \
-        '*:argument:__changes_completion_values_22'
+        '*:argument:__changes_completion_values_28'
 
       ;;
     'provider validate')
       _arguments \
         '--config[YAML configuration file]:value:' \
         '--json[Print JSON]' \
-        '*:argument:__changes_completion_values_23'
+        '*:argument:__changes_completion_values_29'
 
       ;;
   esac

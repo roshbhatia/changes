@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -23,14 +24,20 @@ import (
 )
 
 const (
-	ProtocolVersion   = "changes.provider/v1"
-	ActionCalls       = "changes.calls"
-	ActionNotes       = "changes.notes"
-	ActionNotesCreate = "changes.notes.create"
-	ActionSymbols     = "changes.symbols"
+	ProtocolVersion     = "changes.provider/v1"
+	ActionCalls         = "changes.calls"
+	ActionGroups        = "changes.groups"
+	ActionNotes         = "changes.notes"
+	ActionNotesCreate   = "changes.notes.create"
+	ActionNotesGenerate = "changes.notes.generate"
+	ActionSymbols       = "changes.symbols"
 
 	maxProviderCacheEntryBytes = 4 << 20
+	maxProviderInputBytes      = 16 << 20
 	maxProviderOutputBytes     = 16 << 20
+	maxChangeGroups            = 128
+	maxChangeGroupAnchors      = 1024
+	maxChangeGroupDepth        = 16
 )
 
 // Manifest is the shared provider/v1 manifest.
@@ -64,26 +71,47 @@ func Schema() ([]byte, error) { return providerlib.Schema() }
 
 // Request describes one repository comparison without naming an implementation.
 type Request struct {
-	Version     string     `json:"version"`
-	Action      string     `json:"action"`
-	Base        string     `json:"base,omitempty"`
-	Directory   string     `json:"directory"`
-	Files       []string   `json:"files"`
-	From        string     `json:"from,omitempty"`
-	Fingerprint string     `json:"fingerprint"`
-	Head        string     `json:"head,omitempty"`
-	Note        *NoteDraft `json:"note,omitempty"`
-	Staged      bool       `json:"staged,omitempty"`
-	To          string     `json:"to,omitempty"`
-	Validation  bool       `json:"validation,omitempty"`
+	Version     string      `json:"version"`
+	Action      string      `json:"action"`
+	Base        string      `json:"base,omitempty"`
+	Directory   string      `json:"directory"`
+	Files       []string    `json:"files"`
+	From        string      `json:"from,omitempty"`
+	Fingerprint string      `json:"fingerprint"`
+	Head        string      `json:"head,omitempty"`
+	Note        *NoteDraft  `json:"note,omitempty"`
+	Notes       []NoteDraft `json:"notes,omitempty"`
+	Patch       string      `json:"patch,omitempty"`
+	Staged      bool        `json:"staged,omitempty"`
+	To          string      `json:"to,omitempty"`
+	Validation  bool        `json:"validation,omitempty"`
 }
 
 // Response carries analysis layers produced by a provider.
 type Response struct {
 	Version string                       `json:"version"`
 	Edges   map[string][]diffview.Edge   `json:"edges,omitempty"`
+	Groups  []ChangeGroup                `json:"groups,omitempty"`
 	Notes   []Note                       `json:"notes,omitempty"`
 	Symbols map[string][]diffview.Symbol `json:"symbols,omitempty"`
+}
+
+// ChangeGroup places related hunks under one ordered logical step.
+type ChangeGroup struct {
+	ID       string        `json:"id"`
+	Title    string        `json:"title"`
+	Summary  string        `json:"summary,omitempty"`
+	ParentID string        `json:"parentId,omitempty"`
+	Order    int           `json:"order,omitempty"`
+	Anchors  []GroupAnchor `json:"anchors"`
+}
+
+// GroupAnchor claims changed hunks by repository path and diff coordinates.
+type GroupAnchor struct {
+	Path      string `json:"path"`
+	Side      string `json:"side,omitempty"`
+	StartLine int    `json:"startLine,omitempty"`
+	Line      int    `json:"line,omitempty"`
 }
 
 // Validation combines shared manifest checks with an action-level probe.
@@ -341,7 +369,7 @@ func Run(
 		return Response{}, err
 	}
 	cachePath, cacheErr := resultPath(prepared, action, payload)
-	cacheable := action == ActionSymbols || action == ActionCalls
+	cacheable := action == ActionSymbols || action == ActionCalls || action == ActionGroups
 	if cacheable && cacheErr == nil && cache.TTL > 0 && cache.MaxEntries > 0 {
 		pruneResults(filepath.Dir(cachePath), cache.TTL, cache.MaxEntries)
 		if response, ok := readResult(cachePath, cache.TTL); ok {
@@ -386,17 +414,43 @@ func qualifyNoteIDs(name string, response *Response) {
 
 func prepareRequest(request Request, action string) (Request, []byte, error) {
 	if action == ActionNotesCreate {
-		if err := validateNoteDraft(request.Note); err != nil {
-			return Request{}, nil, err
+		if request.Note != nil == (len(request.Notes) > 0) {
+			return Request{}, nil, errors.New("create requires exactly one of note or notes")
 		}
-	} else if request.Note != nil {
-		return Request{}, nil, fmt.Errorf("request note is only valid for %s", ActionNotesCreate)
+		if request.Note != nil {
+			if err := validateNoteDraft(request.Note); err != nil {
+				return Request{}, nil, err
+			}
+		}
+		for index := range request.Notes {
+			if err := validateNoteDraft(&request.Notes[index]); err != nil {
+				return Request{}, nil, fmt.Errorf("note %d: %w", index+1, err)
+			}
+		}
+		keys := map[string]bool{}
+		for _, note := range request.Notes {
+			if note.Key == "" {
+				continue
+			}
+			if keys[note.Key] {
+				return Request{}, nil, fmt.Errorf("duplicate note key %q", note.Key)
+			}
+			keys[note.Key] = true
+		}
+	} else if request.Note != nil || len(request.Notes) > 0 {
+		return Request{}, nil, fmt.Errorf("request notes are only valid for %s", ActionNotesCreate)
+	}
+	if action != ActionNotesGenerate && action != ActionGroups && request.Patch != "" {
+		return Request{}, nil, fmt.Errorf("request patch is only valid for %s or %s", ActionNotesGenerate, ActionGroups)
 	}
 	request.Version = ProtocolVersion
 	request.Action = action
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return Request{}, nil, err
+	}
+	if len(payload) > maxProviderInputBytes {
+		return Request{}, nil, fmt.Errorf("provider request exceeds %d bytes", maxProviderInputBytes)
 	}
 	return request, payload, nil
 }
@@ -460,6 +514,18 @@ func execute(ctx context.Context, prepared preparedExecution, payload []byte) (R
 		defer cancel()
 	}
 	command := exec.CommandContext(ctx, plan.Argv[0], plan.Argv[1:]...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return nil
+		}
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	command.WaitDelay = time.Second
 	command.Dir = prepared.workingDirectory
 	command.Env = prepared.environment
 	command.Stdin = bytes.NewReader(payload)
@@ -921,13 +987,18 @@ func Validate(ctx context.Context, loaded LoadedManifest) Validation {
 	}
 	request := Request{Directory: directory, Files: []string{"main.ts"}, Fingerprint: "provider-validation"}
 	probed := false
-	for _, action := range []string{ActionSymbols, ActionCalls, ActionNotesCreate, ActionNotes} {
+	for _, action := range []string{ActionSymbols, ActionCalls, ActionGroups, ActionNotesCreate, ActionNotesGenerate, ActionNotes} {
 		if !Supports(manifest, action) {
 			continue
 		}
 		probed = true
 		request.Note = nil
-		request.Validation = action == ActionNotes || action == ActionNotesCreate
+		request.Notes = nil
+		request.Validation = action == ActionGroups || action == ActionNotes || action == ActionNotesCreate || action == ActionNotesGenerate
+		request.Patch = ""
+		if action == ActionNotesGenerate || action == ActionGroups {
+			request.Patch = "diff --git a/main.ts b/main.ts\n@@ -1,2 +1,2 @@\n export function main() {\n-  return pending()\n+  return ready()\n"
+		}
 		if action == ActionNotesCreate {
 			request.Note = &NoteDraft{
 				Summary: "Explain the ready change", Author: "provider-validation", Origin: NoteOriginAgent,
@@ -1002,11 +1073,20 @@ func validateSemantics(action string, response Response) error {
 		if len(response.Edges["main.ts"]) == 0 {
 			return errors.New("response did not identify the changed call in main.ts")
 		}
+	case ActionGroups:
+		for _, group := range response.Groups {
+			for _, anchor := range group.Anchors {
+				if anchor.Path == "main.ts" && strings.Contains(group.Title, "ready") {
+					return nil
+				}
+			}
+		}
+		return errors.New("response did not group the ready change in main.ts")
 	case ActionNotesCreate:
 		if len(response.Notes) != 1 || response.Notes[0].Anchor.Path != "main.ts" {
 			return errors.New("response did not create the validation note in main.ts")
 		}
-	case ActionNotes:
+	case ActionNotes, ActionNotesGenerate:
 		for _, note := range response.Notes {
 			if note.Anchor.Path == "main.ts" && strings.Contains(note.Summary, "ready") {
 				return nil
@@ -1018,7 +1098,29 @@ func validateSemantics(action string, response Response) error {
 }
 
 func validateProviderResponse(name, action string, response Response) error {
-	if action != ActionNotes && action != ActionNotesCreate {
+	if action == ActionGroups {
+		return validateChangeGroups(response.Groups)
+	}
+	if action == ActionSymbols {
+		for path, symbols := range response.Symbols {
+			if err := validateNotePath(path); err != nil {
+				return fmt.Errorf("symbol path %q: %w", path, err)
+			}
+			for _, symbol := range symbols {
+				if hasControlCharacter(symbol.Kind) || hasControlCharacter(symbol.Name) {
+					return fmt.Errorf("symbol in %q contains a control character", path)
+				}
+				if strings.TrimSpace(symbol.Kind) == "" || strings.TrimSpace(symbol.Name) == "" {
+					return fmt.Errorf("symbol in %q requires a kind and name", path)
+				}
+				if symbol.From < 1 || symbol.To < symbol.From {
+					return fmt.Errorf("symbol %q in %q has invalid range %d-%d", symbol.Name, path, symbol.From, symbol.To)
+				}
+			}
+		}
+		return nil
+	}
+	if action != ActionNotes && action != ActionNotesCreate && action != ActionNotesGenerate {
 		return nil
 	}
 	seen := map[string]bool{}
@@ -1033,33 +1135,122 @@ func validateProviderResponse(name, action string, response Response) error {
 			return fmt.Errorf("duplicate note id %q", note.ID)
 		}
 		seen[note.ID] = true
-	}
-	if action == ActionNotesCreate && len(response.Notes) != 1 {
-		return fmt.Errorf("create must return exactly one note, got %d", len(response.Notes))
+		if action == ActionNotesGenerate &&
+			(note.Origin != NoteOriginAgent || note.Authority != NoteAuthorityAdvisory) {
+			return fmt.Errorf("generated note %q must be an advisory agent note", note.ID)
+		}
 	}
 	return nil
 }
 
+func validateChangeGroups(groups []ChangeGroup) error {
+	if len(groups) > maxChangeGroups {
+		return fmt.Errorf("change groups exceed the limit of %d", maxChangeGroups)
+	}
+	byID := make(map[string]ChangeGroup, len(groups))
+	titles := map[string]bool{}
+	anchorCount := 0
+	for _, group := range groups {
+		if strings.TrimSpace(group.ID) == "" || strings.TrimSpace(group.Title) == "" {
+			return errors.New("change group requires an id and title")
+		}
+		if hasControlCharacter(group.ID) || hasControlCharacter(group.Title) || hasControlCharacter(group.Summary) ||
+			strings.Contains(group.Title, "/") || len([]rune(group.ID)) > 200 || len([]rune(group.Title)) > 200 ||
+			len([]rune(group.Summary)) > 2000 {
+			return fmt.Errorf("change group %q contains an unsafe title or identifier", group.ID)
+		}
+		if _, exists := byID[group.ID]; exists {
+			return fmt.Errorf("duplicate change group id %q", group.ID)
+		}
+		key := group.ParentID + "\x00" + group.Title
+		if titles[key] {
+			return fmt.Errorf("duplicate change group title %q under parent %q", group.Title, group.ParentID)
+		}
+		titles[key] = true
+		for _, anchor := range group.Anchors {
+			anchorCount++
+			if anchorCount > maxChangeGroupAnchors {
+				return fmt.Errorf("change group anchors exceed the limit of %d", maxChangeGroupAnchors)
+			}
+			if err := validateNotePath(anchor.Path); err != nil {
+				return fmt.Errorf("change group %q anchor: %w", group.ID, err)
+			}
+			if anchor.Line == 0 {
+				if anchor.Side != "" || anchor.StartLine != 0 {
+					return fmt.Errorf("change group %q file anchor must omit side and lines", group.ID)
+				}
+				continue
+			}
+			startSide := ""
+			if anchor.StartLine > 0 {
+				startSide = anchor.Side
+			}
+			if err := validateRange(anchor.Side, startSide, anchor.StartLine, anchor.Line); err != nil {
+				return fmt.Errorf("change group %q anchor: %w", group.ID, err)
+			}
+		}
+		byID[group.ID] = group
+	}
+	for _, group := range groups {
+		seen := map[string]bool{group.ID: true}
+		parent := group.ParentID
+		depth := 0
+		for parent != "" {
+			depth++
+			if depth > maxChangeGroupDepth {
+				return fmt.Errorf("change group %q exceeds parent depth %d", group.ID, maxChangeGroupDepth)
+			}
+			if seen[parent] {
+				return fmt.Errorf("change group %q has a parent cycle", group.ID)
+			}
+			seen[parent] = true
+			candidate, exists := byID[parent]
+			if !exists {
+				return fmt.Errorf("change group %q names missing parent %q", group.ID, parent)
+			}
+			parent = candidate.ParentID
+		}
+	}
+	return nil
+}
+
+func hasControlCharacter(value string) bool {
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateCreateResponse(request Request, response Response) error {
-	if request.Action != ActionNotesCreate || len(response.Notes) != 1 || request.Note == nil {
+	if request.Action != ActionNotesCreate {
 		return nil
 	}
-	note := response.Notes[0]
-	if note.Anchor != request.Note.Anchor {
-		return errors.New("created note anchor does not match the requested anchor")
+	drafts := request.Notes
+	if request.Note != nil {
+		drafts = []NoteDraft{*request.Note}
 	}
-	anchor := note.Anchor
-	placement := note.Placement
-	if placement.Quality != PlacementExact || placement.Path != anchor.Path ||
-		placement.Side != anchor.Side || placement.StartSide != anchor.StartSide ||
-		placement.StartLine != anchor.StartLine || placement.Line != anchor.Line {
-		return errors.New("created note placement must exactly match the requested anchor")
+	if len(response.Notes) != len(drafts) {
+		return fmt.Errorf("create must return %d notes, got %d", len(drafts), len(response.Notes))
+	}
+	for index, note := range response.Notes {
+		if note.Anchor != drafts[index].Anchor {
+			return fmt.Errorf("created note %d anchor does not match the requested anchor", index+1)
+		}
+		anchor := note.Anchor
+		placement := note.Placement
+		if placement.Quality != PlacementExact || placement.Path != anchor.Path ||
+			placement.Side != anchor.Side || placement.StartSide != anchor.StartSide ||
+			placement.StartLine != anchor.StartLine || placement.Line != anchor.Line {
+			return fmt.Errorf("created note %d placement must exactly match the requested anchor", index+1)
+		}
 	}
 	return nil
 }
 
 func validateResponseComparison(request Request, response Response) error {
-	if request.Action != ActionNotes && request.Action != ActionNotesCreate {
+	if request.Action != ActionNotes && request.Action != ActionNotesCreate && request.Action != ActionNotesGenerate {
 		return nil
 	}
 	target := requestComparisonTarget(request)
@@ -1079,6 +1270,11 @@ func validateResponseComparison(request Request, response Response) error {
 			}
 		} else if anchor.Base != request.Base || anchor.Head != request.Head {
 			return fmt.Errorf("note %q anchor endpoints do not match the requested comparison", note.ID)
+		}
+		if request.Action == ActionNotesGenerate && (anchor.Path != placement.Path || anchor.Side != placement.Side ||
+			anchor.StartSide != placement.StartSide || anchor.StartLine != placement.StartLine || anchor.Line != placement.Line ||
+			anchor.Base != placement.Base || anchor.Head != placement.Head || anchor.Fingerprint != placement.Fingerprint) {
+			return fmt.Errorf("generated note %q anchor and placement must match exactly", note.ID)
 		}
 	}
 	return nil

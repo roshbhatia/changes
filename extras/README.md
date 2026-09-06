@@ -2,6 +2,10 @@
 
 These commands implement optional integrations outside the Changes core.
 
+Providers may also advertise `changes.groups` and return an ordered
+parent-child tree with file or line anchors. See the complete
+[`logical-change-groups`](../examples/logical-change-groups/README.md) example.
+
 Each provider directory owns four parts: its manifest, adapter program,
 runtime dependency package, and validation contract. The root flake discovers
 directories that contain `package.nix`. It exports each one as
@@ -13,9 +17,14 @@ tools into the adapter path. It does not expose those tools as profile commands.
   `changes-provider-ast-grep`.
 - `calldiff/provider.yaml` advertises `changes.calls` and runs
   `changes-provider-calldiff`.
+- `codex-review/provider.yaml` advertises `changes.notes.generate`. It runs
+  Codex only after an explicit `changes note generate` command. It uses an
+  isolated read-only permission profile, disables model-command network, and
+  ignores user configuration, execution rules, and repository instructions.
 - `local-notes/provider.yaml` advertises `changes.notes` and
-  `changes.notes.create`. It shares the existing XDG diff-note record used by
-  the sysinit Neovim integration.
+  `changes.notes.create`. It accepts one note or one atomic batch, and uses
+  supplied note keys for idempotent retries. It stores local note records in
+  the user's XDG state directory and never contacts a remote.
 - `github-pr/provider.yaml` advertises `changes.notes`. It reads pull request
   review threads through the authenticated `gh` command and never changes the
   pull request.
@@ -33,4 +42,5 @@ package. Changes core does not contain an ast-grep or calldiff integration.
 
 Run `changes provider validate` to exercise every configured provider against
 a synthetic working tree. This does not read or change the current repository.
-The GitHub provider returns a synthetic validation note without network access.
+The GitHub and Codex providers return synthetic validation notes without
+network access.

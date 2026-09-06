@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../../schema/provider.schema.json
+version: provider/v1
+name: codex-review
+description: Generate advisory diff notes through an explicit Codex review
+command: [changes-provider-codex-review]
+actions:
+  changes.notes.generate:
+    description: Generate structured review notes for the selected comparison
+defaults:
+  timeout: 5m
+  priority: 60

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/roshbhatia/changes/internal/engine"
 	"github.com/roshbhatia/changes/internal/provider"
 	"github.com/roshbhatia/changes/internal/source"
@@ -131,6 +133,7 @@ func TestCompletionMetadataIncludesContextualArguments(t *testing.T) {
 		kind string
 	}{
 		{path: []string{"note", "add"}, kind: "note-writers"},
+		{path: []string{"note", "generate"}, kind: "note-generators"},
 		{path: []string{"note", "list"}, kind: "note-readers"},
 	} {
 		command := subcommandMetadata(test.path...)
@@ -184,11 +187,14 @@ func TestNoteRefreshUsesItsOwnInterval(t *testing.T) {
 	}
 }
 
-func TestStaleNoteSummaryLabelsPreviousComparison(t *testing.T) {
-	got := staleNoteSummary("notes\nmain.go:1@right\n  keep this")
-	if !strings.Contains(got, "previous comparison; refresh pending") ||
-		!strings.Contains(got, "main.go:1@right") || strings.HasPrefix(got, "notes\n") {
-		t.Fatalf("stale note summary = %q", got)
+func TestStaleNoteLabelMarksRefreshPending(t *testing.T) {
+	note := provider.Note{
+		State: provider.NoteStateOpen, Author: "reviewer", Source: "test",
+		Placement: provider.NotePlacement{Path: "main.go", Side: provider.NoteSideRight, Line: 1, Quality: provider.PlacementExact},
+	}
+	got := noteTreeLabel(note, true)
+	if !strings.Contains(got, "refresh-pending") || !strings.Contains(got, "line 1@right") {
+		t.Fatalf("stale note label = %q", got)
 	}
 }
 
@@ -248,6 +254,62 @@ func TestNormalizeDiffPathsDecodesGitQuotedPath(t *testing.T) {
 	}
 	if got, want := files[1].Path, "b/literal-prefix.go"; got != want {
 		t.Fatalf("literal path = %q, want %q", got, want)
+	}
+}
+
+func TestDisplayDiffPathQuotesTheCompleteRecursivePath(t *testing.T) {
+	got := displayDiffPath("repo/space and\nnewline.go")
+	if want := `"repo/space and\nnewline.go"`; got != want {
+		t.Fatalf("display path = %q, want %q", got, want)
+	}
+	if !sameDiffPath(got, "repo/space and\nnewline.go") {
+		t.Fatalf("quoted display path lost its raw identity: %q", got)
+	}
+}
+
+func TestParseDiffFilesKeepsDeletedAndBodylessFiles(t *testing.T) {
+	patch := "diff --git a/deleted.go b/deleted.go\n" +
+		"deleted file mode 100644\n--- a/deleted.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n" +
+		"diff --git a/mode.go b/mode.go\nold mode 100644\nnew mode 100755\n" +
+		"diff --git a/image.bin b/image.bin\nBinary files a/image.bin and b/image.bin differ\n"
+	files, rawPaths := parseDiffFiles(patch)
+	if len(files) != 3 {
+		t.Fatalf("parsed files = %+v", files)
+	}
+	for index, want := range []string{"deleted.go", "mode.go", "image.bin"} {
+		if files[index].Path != want || rawPaths[files[index].Path] != want {
+			t.Fatalf("file %d = %+v, paths = %#v", index, files[index], rawPaths)
+		}
+	}
+	if len(files[0].Hunks) != 1 || len(files[1].Hunks) != 0 || len(files[2].Hunks) != 0 {
+		t.Fatalf("file bodies = %+v", files)
+	}
+}
+
+func TestParseDiffFilesSanitizesTerminalControls(t *testing.T) {
+	patch := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1 @@\n+safe\x1b]52;c;secret\x07text\n"
+	files, _ := parseDiffFiles(patch)
+	if len(files) != 1 || len(files[0].Hunks) != 1 || len(files[0].Hunks[0].Lines) < 1 {
+		t.Fatalf("parsed files = %+v", files)
+	}
+	text := files[0].Hunks[0].Lines[0].Text
+	if strings.ContainsAny(text, "\x1b\x07") || !strings.Contains(text, "safe") || !strings.Contains(text, "text") {
+		t.Fatalf("sanitized diff text = %q", text)
+	}
+}
+
+func TestDisplayedNotePathsAndRenameProjection(t *testing.T) {
+	patch := "diff --git a/old.go b/new.go\nsimilarity index 90%\nrename from old.go\nrename to new.go\n--- a/old.go\n+++ b/new.go\n@@ -1 +1 @@\n-old\n+new\n"
+	if got := notePathsInPatch(patch); !slices.Equal(got, []string{"old.go", "new.go"}) {
+		t.Fatalf("note paths = %#v", got)
+	}
+	note := provider.Note{
+		Anchor:    provider.NoteAnchor{Path: "old.go"},
+		Placement: provider.NotePlacement{Path: "old.go", Side: provider.NoteSideLeft, Line: 1, Quality: provider.PlacementExact},
+	}
+	remapped := remapNotePaths(noteLayer{values: []provider.Note{note}}, diffPathAliases(patch))
+	if remapped.values[0].Anchor.Path != "new.go" || remapped.values[0].Placement.Path != "new.go" {
+		t.Fatalf("remapped note = %+v", remapped.values[0])
 	}
 }
 
@@ -367,7 +429,8 @@ func TestCompletionsKeepNestedProviderContext(t *testing.T) {
 		}},
 		{"zsh", []string{
 			"values=( 'completion' 'difftool' 'render' 'generate' 'note' 'provider')",
-			"'*:argument:__changes_completion_values_3'",
+			"'*:argument:__changes_completion_values_",
+			"'changes' '__values' 'repository'",
 			"'2:command:(list validate)'",
 		}},
 		{"fish", []string{
@@ -403,6 +466,7 @@ func TestCommandMetadataIncludesEveryDispatchedCommand(t *testing.T) {
 		{"generate"},
 		{"note"},
 		{"note", "add"},
+		{"note", "generate"},
 		{"note", "list"},
 		{"provider"},
 		{"provider", "list"},
@@ -615,7 +679,7 @@ func TestMalformedOptionalProviderDoesNotDisableCoreRender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("core render failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"skipped provider broken", "diff --git a/main.ts b/main.ts"} {
+	for _, want := range []string{"skipped provider broken", "main.ts", "return true"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("core render omitted %q:\n%s", want, out)
 		}
@@ -650,7 +714,7 @@ func TestInaccessibleOptionalProviderPathDoesNotDisableCoreRender(t *testing.T) 
 	if err != nil {
 		t.Fatalf("core render failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"skipped provider providers", "not a directory", "diff --git a/main.ts b/main.ts"} {
+	for _, want := range []string{"skipped provider providers", "not a directory", "main.ts", "return true"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("core render omitted %q:\n%s", want, out)
 		}
@@ -718,7 +782,7 @@ func TestExplicitSeparatorTreatsHEADAsAPath(t *testing.T) {
 	}
 
 	out := runChangesHelper(t, parent, "--root", "repository", "--color", "never", "--no-symbols", "--no-calls", "--", "HEAD")
-	if !strings.Contains(out, "diff --git a/HEAD b/HEAD") || strings.Contains(out, "other.md") {
+	if !strings.Contains(out, "HEAD") || !strings.Contains(out, "+ after") || strings.Contains(out, "other.md") {
 		t.Fatalf("path-limited output =\n%s", out)
 	}
 }
@@ -741,7 +805,7 @@ func TestRootPathspecIsRelativeToSelectedRoot(t *testing.T) {
 	}
 
 	out := runChangesHelper(t, parent, "--root", "repository", "--color", "never", "--no-symbols", "--no-calls", "--", "nested/target.md")
-	if !strings.Contains(out, "nested/target.md") || strings.Contains(out, "other.md") {
+	if !strings.Contains(out, "nested/") || !strings.Contains(out, "target.md") || strings.Contains(out, "other.md") {
 		t.Fatalf("selected-root output =\n%s", out)
 	}
 }
@@ -803,7 +867,7 @@ func TestMainHelperProcess(t *testing.T) {
 	os.Exit(2)
 }
 
-func TestDefaultRendererKeepsUnifiedGitPatch(t *testing.T) {
+func TestDefaultRendererEmbedsUnifiedDiffInTree(t *testing.T) {
 	directory, err := source.ValidationFixture()
 	if err != nil {
 		t.Fatal(err)
@@ -812,7 +876,6 @@ func TestDefaultRendererKeepsUnifiedGitPatch(t *testing.T) {
 	view := renderer{
 		specs:  []source.Spec{{Dir: directory}},
 		width:  80,
-		color:  "never",
 		engine: "builtin",
 		engineOptions: engine.Options{
 			Color: "never", Layout: "unified", Width: 80,
@@ -822,17 +885,17 @@ func TestDefaultRendererKeepsUnifiedGitPatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"diff --git a/main.ts b/main.ts", "-  return false", "+  return true"} {
+	for _, want := range []string{"1 file", "main.ts", "── line 1", "-   return false", "+   return true"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("default output omitted %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "1 file") {
-		t.Fatalf("default output repeated the file summary:\n%s", out)
+	if strings.Contains(out, "diff --git") {
+		t.Fatalf("default output escaped the tree view:\n%s", out)
 	}
 }
 
-func TestSemanticContextKeepsSymbolsAndCallsWithoutAFileTree(t *testing.T) {
+func TestSemanticContextNestsSymbolsAndCallsUnderFiles(t *testing.T) {
 	files := []diffview.File{{
 		Path: "main.go",
 		Hunks: []diffview.Hunk{{
@@ -849,8 +912,9 @@ func TestSemanticContextKeepsSymbolsAndCallsWithoutAFileTree(t *testing.T) {
 			"main.go": {{Line: 2, Added: true}},
 		},
 	}
-	rows := semanticRows(options)
-	if !strings.Contains(rows, "main.go:1 · function run") || !strings.Contains(rows, "+1 call") {
+	rows := semanticTreeRows(options, noteLayer{}, 80)
+	if !strings.Contains(rows, "├── main.go") && !strings.Contains(rows, "└── main.go") ||
+		!strings.Contains(rows, "function run") || !strings.Contains(rows, "+1 call") {
 		t.Fatalf("semantic context =\n%s", rows)
 	}
 	if strings.Contains(rows, "1 file") || strings.Contains(rows, "old()") || strings.Contains(rows, "new()") {
@@ -881,10 +945,384 @@ func TestSemanticContextFindsEveryChangedSymbolInOneHunk(t *testing.T) {
 			},
 		},
 	}
-	rows := semanticRows(options)
+	rows := semanticTreeRows(options, noteLayer{}, 80)
 	for _, symbol := range []string{"function one", "function two"} {
 		if !strings.Contains(rows, symbol) {
 			t.Fatalf("semantic context omitted %q:\n%s", symbol, rows)
 		}
+	}
+}
+
+func TestSemanticContextNestsNoteUnderOwningSymbol(t *testing.T) {
+	options := diffview.Options{
+		Files: []diffview.File{{
+			Path:  "main.go",
+			Hunks: []diffview.Hunk{{NewAt: 1, Lines: []diffview.Line{{Kind: '+', Text: "changed()"}}}},
+		}},
+		Symbols: map[string][]diffview.Symbol{
+			"main.go": {{Kind: "function", Name: "run", From: 1, To: 3}},
+		},
+		Edges: map[string][]diffview.Edge{},
+	}
+	note := provider.Note{
+		Summary: "Review the call", Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{
+			Path: "main.go", Side: provider.NoteSideRight, Line: 1, Quality: provider.PlacementExact,
+		},
+	}
+	rows := semanticTreeRows(options, noteLayer{values: []provider.Note{note}}, 80)
+	fileLine := strings.Index(rows, "main.go")
+	symbolLine := strings.Index(rows, "function run")
+	noteLine := strings.Index(rows, "● line 1@right")
+	if fileLine < 0 || symbolLine < fileLine || noteLine < symbolLine {
+		t.Fatalf("semantic note tree =\n%s", rows)
+	}
+}
+
+func TestSemanticContextKeepsLeftNoteAtFileLevel(t *testing.T) {
+	options := diffview.Options{
+		Files: []diffview.File{{
+			Path:  "main.go",
+			Hunks: []diffview.Hunk{{NewAt: 1, Lines: []diffview.Line{{Kind: '+', Text: "new()"}}}},
+		}},
+		Symbols: map[string][]diffview.Symbol{
+			"main.go": {{Kind: "function", Name: "newOwner", From: 1, To: 3}},
+		},
+		Edges: map[string][]diffview.Edge{},
+	}
+	note := provider.Note{
+		Summary: "Old-side note", Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{Path: "main.go", Side: provider.NoteSideLeft, Line: 1, Quality: provider.PlacementExact},
+	}
+	rows := semanticTreeRows(options, noteLayer{values: []provider.Note{note}}, 80)
+	for _, row := range strings.Split(rows, "\n") {
+		if strings.Contains(row, "● line 1@left") && strings.HasPrefix(ansi.Strip(row), "        ") {
+			t.Fatalf("left note was nested under a current-file symbol:\n%s", rows)
+		}
+	}
+}
+
+func TestEmbeddedNoteSitsBelowItsDiffLine(t *testing.T) {
+	options := diffview.Options{
+		Width: 80, Unified: true,
+		Files: []diffview.File{{
+			Path: "main.go", Add: 1, Del: 1,
+			Hunks: []diffview.Hunk{{OldAt: 1, NewAt: 1, Lines: []diffview.Line{
+				{Kind: '-', Text: "old()"}, {Kind: '+', Text: "new()"},
+			}}},
+		}},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	note := provider.Note{
+		ID: "test:1", Summary: "Keep the new behavior", Rationale: "Callers require it.",
+		Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{
+			Path: "main.go", Side: provider.NoteSideRight, Line: 1, Quality: provider.PlacementExact,
+		},
+	}
+	output, err := renderTreeWithNotes(options, noteLayer{values: []provider.Note{note}}, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diffLine := strings.Index(output, "+ new()")
+	noteLine := strings.Index(output, "● line 1@right")
+	if diffLine < 0 || noteLine < diffLine || !strings.Contains(output[noteLine:], "Keep the new behavior") {
+		t.Fatalf("embedded note =\n%s", output)
+	}
+}
+
+func TestEmbeddedNoteUsesTheSelectedSideInSideBySideView(t *testing.T) {
+	options := diffview.Options{
+		Width: 100,
+		Files: []diffview.File{{
+			Path: "main.go", Add: 1, Del: 1,
+			Hunks: []diffview.Hunk{{OldAt: 1, NewAt: 1, Lines: []diffview.Line{
+				{Kind: '-', Text: "old()"}, {Kind: '+', Text: "new()"},
+			}}},
+		}},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	note := provider.Note{
+		Summary: "Review the new call", Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{
+			Path: "main.go", Side: provider.NoteSideRight, Line: 1, Quality: provider.PlacementExact,
+		},
+	}
+	output, err := renderTreeWithNotes(options, noteLayer{values: []provider.Note{note}}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diffLine := strings.Index(output, "new()")
+	noteLine := strings.Index(output, "● line 1@right")
+	if diffLine < 0 || noteLine < diffLine {
+		t.Fatalf("side-by-side note =\n%s", output)
+	}
+}
+
+func TestFileNoteSitsUnderItsFileNode(t *testing.T) {
+	options := diffview.Options{
+		Width: 80, Unified: true,
+		Files: []diffview.File{{
+			Path: "main.go", Add: 1,
+			Hunks: []diffview.Hunk{{OldAt: 1, NewAt: 1, Lines: []diffview.Line{{Kind: '+', Text: "new()"}}}},
+		}},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	note := provider.Note{
+		Summary: "Review the whole file", Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{Path: "main.go", Quality: provider.PlacementExact},
+	}
+	output, err := renderTreeWithNotes(options, noteLayer{values: []provider.Note{note}}, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileLine := strings.Index(output, "main.go")
+	noteLine := strings.Index(output, "● file")
+	hunkLine := strings.Index(output, "── line 1")
+	if fileLine < 0 || noteLine < fileLine || hunkLine < noteLine {
+		t.Fatalf("file note =\n%s", output)
+	}
+}
+
+func TestStatViewKeepsNotesUnderFiles(t *testing.T) {
+	options := diffview.Options{
+		Width: 80, Stat: true,
+		Files:   []diffview.File{{Path: "main.go", Add: 1}},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	note := provider.Note{
+		Summary: "Review this change", Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{Path: "main.go", Side: provider.NoteSideRight, Line: 1, Quality: provider.PlacementExact},
+	}
+	output, err := renderTreeWithNotes(options, noteLayer{values: []provider.Note{note}}, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file, annotation := strings.Index(output, "main.go"), strings.Index(output, "● line 1@right"); file < 0 || annotation < file {
+		t.Fatalf("stat note =\n%s", output)
+	}
+}
+
+func TestLogicalGroupsOrderAndNestDiffsByChangeFlow(t *testing.T) {
+	options := diffview.Options{
+		Width: 90, Unified: true,
+		Files: []diffview.File{
+			{Path: "z_handler.go", Add: 1, Hunks: []diffview.Hunk{{OldAt: 1, NewAt: 1, Lines: []diffview.Line{{Kind: '+', Text: "handle()"}}}}},
+			{Path: "a_store.go", Add: 1, Hunks: []diffview.Hunk{{OldAt: 1, NewAt: 1, Lines: []diffview.Line{{Kind: '+', Text: "save()"}}}}},
+		},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	groups := []provider.ChangeGroup{
+		{ID: "flow", Title: "request flow", Order: 1},
+		{ID: "handler", ParentID: "flow", Title: "accept request", Order: 2, Anchors: []provider.GroupAnchor{{Path: "z_handler.go", Side: provider.NoteSideRight, Line: 1}}},
+		{ID: "storage", Title: "persist result", Order: 3, Anchors: []provider.GroupAnchor{{Path: "a_store.go", Side: provider.NoteSideRight, Line: 1}}},
+	}
+	note := provider.Note{
+		Summary: "Keep validation first", Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{Path: "z_handler.go", Side: provider.NoteSideRight, Line: 1, Quality: provider.PlacementExact},
+	}
+	output, err := renderTreeWithGroups(options, groups, noteLayer{values: []provider.Note{note}}, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow := strings.Index(output, "request flow/")
+	child := strings.Index(output, "accept request/")
+	handler := strings.Index(output, "z_handler.go")
+	noteAt := strings.Index(output, "● line 1@right")
+	storage := strings.Index(output, "persist result/")
+	storeFile := strings.Index(output, "a_store.go")
+	if flow < 0 || child < flow || handler < child || noteAt < handler || storage < noteAt || storeFile < storage {
+		t.Fatalf("logical group tree =\n%s", output)
+	}
+}
+
+func TestLogicalGroupPartsKeepOnlyTheirSemanticEdges(t *testing.T) {
+	options := diffview.Options{
+		Files: []diffview.File{{Path: "main.go", Hunks: []diffview.Hunk{
+			{OldAt: 1, NewAt: 1, Lines: []diffview.Line{{Kind: '+', Text: "first()"}}},
+			{OldAt: 20, NewAt: 20, Lines: []diffview.Line{{Kind: '+', Text: "second()"}}},
+		}}},
+		Symbols: map[string][]diffview.Symbol{"main.go": {{Kind: "function", Name: "run", From: 1, To: 30}}},
+		Edges:   map[string][]diffview.Edge{"main.go": {{Line: 1, Added: true}}}, Pins: map[string]bool{},
+	}
+	groups := []provider.ChangeGroup{
+		{ID: "first", Title: "first", Anchors: []provider.GroupAnchor{{Path: "main.go", Side: provider.NoteSideRight, Line: 1}}},
+		{ID: "second", Title: "second", Anchors: []provider.GroupAnchor{{Path: "main.go", Side: provider.NoteSideRight, Line: 20}}},
+	}
+	parts := partitionChangeGroups(options, groups, nil)
+	if len(parts) != 2 || len(parts[0].options.Edges["main.go"]) != 1 || len(parts[1].options.Edges["main.go"]) != 0 {
+		t.Fatalf("grouped semantic edges = %+v", parts)
+	}
+}
+
+func TestSelectGroupProviderUsesPriorityOrderOrExplicitName(t *testing.T) {
+	providers := []provider.LoadedManifest{
+		{Manifest: provider.Manifest{Name: "preferred", Actions: map[string]providerlib.Action{provider.ActionGroups: {}}}},
+		{Manifest: provider.Manifest{Name: "selected", Actions: map[string]providerlib.Action{provider.ActionGroups: {}}}},
+	}
+	got, found, err := selectGroupProvider(providers, "")
+	if err != nil || !found || got.Manifest.Name != "preferred" {
+		t.Fatalf("default provider = %+v, found=%v, err=%v", got, found, err)
+	}
+	got, found, err = selectGroupProvider(providers, "selected")
+	if err != nil || !found || got.Manifest.Name != "selected" {
+		t.Fatalf("explicit provider = %+v, found=%v, err=%v", got, found, err)
+	}
+	if _, _, err := selectGroupProvider(providers, "missing"); err == nil {
+		t.Fatal("missing explicit group provider was accepted")
+	}
+}
+
+func TestValidateGroupSelectionRejectsUnsupportedOrMissingProvider(t *testing.T) {
+	providers := []provider.LoadedManifest{{Manifest: provider.Manifest{
+		Name: "groups", Actions: map[string]providerlib.Action{provider.ActionGroups: {}},
+	}}}
+	if err := validateGroupSelection("filter", true, "groups", providers); err == nil || !strings.Contains(err.Error(), "builtin") {
+		t.Fatalf("filter selection error = %v", err)
+	}
+	if err := validateGroupSelection("builtin", true, "missing", providers); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing selection error = %v", err)
+	}
+	if err := validateGroupSelection("filter", false, "groups", providers); err != nil {
+		t.Fatalf("disabled grouping = %v", err)
+	}
+}
+
+func TestAnalysisBudgetIsSharedAcrossProviderActions(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := provider.Manifest{
+		Version: providerlib.Version, Name: "slow", Description: "slow provider",
+		Command: []string{shell, "-c", "sleep 5"},
+		Actions: map[string]providerlib.Action{
+			provider.ActionSymbols: {Description: "symbols"},
+			provider.ActionCalls:   {Description: "calls"},
+			provider.ActionGroups:  {Description: "groups"},
+		},
+	}
+	renderer := renderer{
+		providers: []provider.LoadedManifest{{Manifest: manifest}}, syms: true, calls: true, groups: true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	renderer.layers(ctx, source.Spec{Dir: t.TempDir()}, []string{"main.go"}, "diff --git a/main.go b/main.go\n")
+	if elapsed := time.Since(started); elapsed > 400*time.Millisecond {
+		t.Fatalf("shared analysis budget took %s", elapsed)
+	}
+}
+
+func TestEmbeddedNoteUsesStructuralLineAnchor(t *testing.T) {
+	options := diffview.Options{
+		Width: 80, Unified: true,
+		Files: []diffview.File{{
+			Path: "main.go", Add: 1,
+			Hunks: []diffview.Hunk{{OldAt: 1, NewAt: 1, Lines: []diffview.Line{
+				{Kind: ' ', Text: "text := `   2 + misleading`"},
+				{Kind: '+', Text: "target()"},
+			}}},
+		}},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	note := provider.Note{
+		Summary: "Review the target", Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{Path: "main.go", Side: provider.NoteSideRight, Line: 2, Quality: provider.PlacementExact},
+	}
+	output, err := renderTreeWithNotes(options, noteLayer{values: []provider.Note{note}}, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, annotation := strings.Index(output, "+ target()"), strings.Index(output, "● line 2@right"); target < 0 || annotation < target {
+		t.Fatalf("structurally anchored note =\n%s", output)
+	}
+}
+
+func TestEmbeddedLeftNoteUsesOldLineCoordinates(t *testing.T) {
+	options := diffview.Options{
+		Width: 50,
+		Files: []diffview.File{{
+			Path: "main.go", Add: 1,
+			Hunks: []diffview.Hunk{{OldAt: 10, NewAt: 10, Lines: []diffview.Line{
+				{Kind: '+', Text: "inserted()"},
+				{Kind: ' ', Text: "kept()"},
+			}}},
+		}},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	note := provider.Note{
+		Summary: "Old-side context", Author: "reviewer", Source: "test", State: provider.NoteStateOpen,
+		Placement: provider.NotePlacement{Path: "main.go", Side: provider.NoteSideLeft, Line: 10, Quality: provider.PlacementExact},
+	}
+	output, err := renderTreeWithNotes(options, noteLayer{values: []provider.Note{note}}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept, annotation := strings.Index(output, "kept()"), strings.Index(output, "● line 10@left"); kept < 0 || annotation < kept {
+		t.Fatalf("old-side note =\n%s", output)
+	}
+}
+
+func TestTreeOutputHonorsWidth(t *testing.T) {
+	options := diffview.Options{
+		Width: 40, Unified: true,
+		Files: []diffview.File{{
+			Path: "main.go", Add: 1,
+			Hunks: []diffview.Hunk{{OldAt: 1, NewAt: 1, Lines: []diffview.Line{{Kind: '+', Text: strings.Repeat("long", 60)}}}},
+		}},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	output, err := renderTreeWithNotes(options, noteLayer{}, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range strings.Split(output, "\n") {
+		if width := ansi.StringWidth(row); width > 40 {
+			t.Fatalf("row width = %d:\n%s", width, output)
+		}
+	}
+}
+
+func TestNoteMarkerIsInvisibleAndDistinct(t *testing.T) {
+	one, two := noteMarker(1), noteMarker(2)
+	if one == two || ansi.StringWidth(one) != 0 || ansi.StringWidth(two) != 0 {
+		t.Fatalf("markers are not distinct zero-width values: %q %q", one, two)
+	}
+}
+
+func TestFailedNoteRefreshKeepsPreviousLayerStale(t *testing.T) {
+	previous := noteLayer{values: []provider.Note{{ID: "github:1", Source: "github"}}}
+	got := refreshNoteLayer(previous, noteRead{
+		values: []provider.Note{{ID: "local:2", Source: "local"}}, failedSources: map[string]bool{"github": true},
+	})
+	if len(got.values) != 2 || got.values[0].ID != "github:1" || got.values[1].ID != "local:2" || !got.stale {
+		t.Fatalf("refreshed notes = %+v", got)
+	}
+}
+
+func TestPatchChangeSuppressesOldNotesUntilRefresh(t *testing.T) {
+	previous := noteLayer{values: []provider.Note{{ID: "local:1"}}}
+	if got := noteLayerForFrame(previous, true, false); len(got.values) != 0 {
+		t.Fatalf("changed patch reused old notes: %+v", got)
+	}
+	if got := noteLayerForFrame(previous, true, true); len(got.values) != 1 {
+		t.Fatalf("due refresh suppressed notes: %+v", got)
+	}
+}
+
+func TestReadPatchRejectsOversizedInput(t *testing.T) {
+	if _, err := readPatch(strings.NewReader("12345"), 4); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized patch error = %v", err)
+	}
+	if got, err := readPatch(strings.NewReader("1234"), 4); err != nil || string(got) != "1234" {
+		t.Fatalf("bounded patch = %q, %v", got, err)
+	}
+}
+
+func TestInitialPartialNoteRefreshKeepsSuccessfulNotes(t *testing.T) {
+	got := refreshNoteLayer(noteLayer{}, noteRead{values: []provider.Note{{ID: "local:2"}}})
+	if len(got.values) != 1 || got.values[0].ID != "local:2" || !got.stale {
+		t.Fatalf("refreshed notes = %+v", got)
 	}
 }

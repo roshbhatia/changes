@@ -2,11 +2,14 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"text/template"
 	"time"
@@ -374,6 +377,13 @@ func TestRunRejectsInvalidResponseVersion(t *testing.T) {
 	}
 }
 
+func TestPrepareRequestRejectsOversizedPatch(t *testing.T) {
+	_, _, err := prepareRequest(Request{Patch: strings.Repeat("x", maxProviderInputBytes)}, ActionGroups)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized request error = %v", err)
+	}
+}
+
 func TestRunReportsParentCancellation(t *testing.T) {
 	t.Parallel()
 	sleep, err := exec.LookPath("sleep")
@@ -388,6 +398,45 @@ func TestRunReportsParentCancellation(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "canceled: context canceled") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunCancellationKillsProviderDescendants(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	script := `sleep 30 &
+child=$!
+printf '%s' "$child" > "$1"
+wait "$child"
+`
+	configured := manifest("symbols", ActionSymbols, []string{shell, "-c", script, "provider", pidFile})
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, err = runProvider(ctx, configured, ActionSymbols, Request{Directory: t.TempDir(), Fingerprint: t.Name()})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error = %v", err)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err = syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("provider descendant %d survived cancellation: %v", pid, err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+request=$(</dev/stdin)
+if jq -e '.validation' >/dev/null <<<"$request"; then
+  printf '%s\n' '{"version":"changes.provider/v1","groups":[{"id":"ready","title":"ready flow","anchors":[{"path":"main.ts","side":"RIGHT","line":2}]}]}'
+  exit 0
+fi
+
+printf '%s\n' '{"version":"changes.provider/v1","groups":[{"id":"request","title":"request flow","order":1},{"id":"accept","title":"accept request","parentId":"request","order":2,"anchors":[{"path":"handler.go"}]},{"id":"persist","title":"persist result","order":3,"anchors":[{"path":"store.go"}]}]}'

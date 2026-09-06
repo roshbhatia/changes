@@ -1,5 +1,7 @@
 # Use another Git-compatible difftool
 
+[![Custom difftool demo](demo.gif)](demo.tape)
+
 Install the two display tools, then create `~/.config/changes/config.yaml`:
 
 ```bash
@@ -26,3 +28,9 @@ git diff | changes render
 `delta` reads a unified patch from standard input. `difft` accepts two file
 paths. The commands use separate configuration because their argument
 contracts differ.
+
+Replay the [VHS tape](demo.tape) from the repository root:
+
+```bash
+nix develop -c ./hack/example-demos.sh custom-difftool
+```

@@ -272,8 +272,10 @@
                   > ./-dash.ts
                 changes --color never -- ./-dash.ts > output 2> error
                 test ! -s error
-                grep -F -- 'diff --git a/-dash.ts b/-dash.ts' output
                 grep -F -- '-dash.ts' output
+                grep -F -- 'return 1' output
+                grep -F -- 'return 2' output
+                ! grep -F -- 'diff --git' output
                 touch "$out"
               '';
           coreRuntimePaths = map toString packages.default.runtimeInputs;
@@ -315,6 +317,20 @@
                 for manifest in ${./.}/extras/*/provider.yaml; do
                   cue vet ${./.}/schema/provider.cue "$manifest" -d '#Provider'
                 done
+                touch "$out"
+              '';
+          codex-permission-profile =
+            pkgs.runCommand "changes-codex-permission-profile"
+              {
+                nativeBuildInputs = [
+                  pkgs.codex
+                  pkgs.gnugrep
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home"
+                mkdir -p "$HOME"
+                ${pkgs.bash}/bin/bash ${./hack/check-codex-permissions.sh} ${pkgs.lib.getExe pkgs.codex}
                 touch "$out"
               '';
           zero-provider-closure =
@@ -383,6 +399,24 @@
               }
               ''
                 ${pkgs.bash}/bin/bash ${./.}/hack/screenshots.sh --check
+                ${pkgs.bash}/bin/bash ${./.}/hack/example-demos.sh --check
+                touch "$out"
+              '';
+          example-tapes =
+            pkgs.runCommand "changes-example-tapes"
+              {
+                nativeBuildInputs = [
+                  pkgs.gnugrep
+                  pkgs.vhs
+                ];
+              }
+              ''
+                for readme in ${./.}/examples/*/README.md; do
+                  directory=$(dirname "$readme")
+                  test -f "$directory/demo.tape"
+                  grep -Fq '(demo.tape)' "$readme"
+                  vhs validate "$directory/demo.tape"
+                done
                 touch "$out"
               '';
           release-archive =
@@ -427,7 +461,10 @@
               pkgs.go-tools
               pkgs.goreleaser
               pkgs.cue
+              pkgs.delta
+              pkgs.difftastic
               pkgs.ripgrep
+              pkgs.shellcheck
               pkgs.shfmt
               pkgs.git
               pkgs.gnutar

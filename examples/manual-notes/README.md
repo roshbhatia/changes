@@ -1,5 +1,7 @@
 # Add manual notes from a terminal or editor
 
+[![Manual notes demo](demo.gif)](demo.tape)
+
 Run `note add` without message flags to open `notes.editor`, then `$VISUAL`,
 then `$EDITOR`, then `vi`:
 
@@ -30,3 +32,9 @@ changes note add \
 
 For a deleted line, use `--side left`. For a file-level note, omit `--line`.
 Use `changes note list --json` when an editor plugin needs structured output.
+
+Replay the [VHS tape](demo.tape) from the repository root:
+
+```bash
+nix develop -c ./hack/example-demos.sh manual-notes
+```

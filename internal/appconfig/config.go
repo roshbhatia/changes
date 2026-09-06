@@ -19,8 +19,9 @@ type Config struct {
 // Notes configures interactive note authoring. The command receives the draft
 // file through $FILE, or as its final argument when the placeholder is absent.
 type Notes struct {
-	Editor          []string             `json:"editor,omitempty" yaml:"editor"`
-	RefreshInterval providerlib.Duration `json:"refreshInterval,omitempty" yaml:"refreshInterval,omitempty"`
+	Editor           []string             `json:"editor,omitempty" yaml:"editor"`
+	GeneratorTimeout providerlib.Duration `json:"generatorTimeout,omitempty" yaml:"generatorTimeout,omitempty"`
+	RefreshInterval  providerlib.Duration `json:"refreshInterval,omitempty" yaml:"refreshInterval,omitempty"`
 }
 
 // Providers controls external provider discovery and execution.
@@ -28,6 +29,7 @@ type Providers struct {
 	CacheMaxEntries int                  `json:"cacheMaxEntries,omitempty" yaml:"cacheMaxEntries,omitempty" jsonschema:"minimum=0"`
 	CacheTTL        providerlib.Duration `json:"cacheTtl,omitempty" yaml:"cacheTtl,omitempty"`
 	Directory       string               `json:"directory,omitempty" yaml:"directory,omitempty"`
+	Group           string               `json:"group,omitempty" yaml:"group,omitempty"`
 	Timeout         providerlib.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
@@ -47,7 +49,10 @@ func Default() Config {
 			Engine: "builtin",
 			Layout: "unified",
 		},
-		Notes: Notes{RefreshInterval: providerlib.Duration(30 * time.Second)},
+		Notes: Notes{
+			GeneratorTimeout: providerlib.Duration(5 * time.Minute),
+			RefreshInterval:  providerlib.Duration(30 * time.Second),
+		},
 		Providers: Providers{
 			CacheMaxEntries: 256,
 			CacheTTL:        providerlib.Duration(time.Hour),

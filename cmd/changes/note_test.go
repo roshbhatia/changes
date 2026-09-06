@@ -340,6 +340,8 @@ actions:
     description: read notes
   changes.notes.create:
     description: create notes
+  changes.notes.generate:
+    description: generate notes
 `, os.Args[0], "-test.run=TestFakeNoteProviderProcess", "--", capture)
 	if err := os.WriteFile(filepath.Join(providers, "fake.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
@@ -376,10 +378,30 @@ actions:
 		}
 	}
 	out = runNoteCLI(t, repository, "--config", config, "--color", "never", "--no-symbols", "--no-calls")
-	for _, want := range []string{"notes", "Remember this context", "diff --git a/main.go b/main.go"} {
+	for _, want := range []string{"1 file", "main.go", "+ changed", "● line 2@right", "Remember this context"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render omitted %q:\n%s", want, out)
 		}
+	}
+	out = runNoteCLI(t, repository, "note", "generate", "--config", config,
+		"--provider", "fake", "--store", "fake", "--session", "review-9")
+	for _, want := range []string{"note: fake:created-1 main.go:2", "note: fake:created-2 main.go:1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("note generate output omitted %q: %s", want, out)
+		}
+	}
+	payload, err = os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Action != provider.ActionNotesCreate || len(request.Notes) != 2 ||
+		request.Notes[0].Key != "fake:generated" || request.Notes[0].Summary != "Generated review note" ||
+		request.Notes[0].Session != "review-9" || request.Notes[0].Anchor.Context != "changed" ||
+		request.Notes[1].Key != "fake:generated-2" || request.Notes[1].Anchor.Context != "one" {
+		t.Fatalf("generated create request = %+v", request)
 	}
 }
 
@@ -390,8 +412,9 @@ func TestNoteProviderCompletionUsesConfigAndAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, action := range map[string]string{
-		"reader": provider.ActionNotes,
-		"writer": provider.ActionNotesCreate,
+		"generator": provider.ActionNotesGenerate,
+		"reader":    provider.ActionNotes,
+		"writer":    provider.ActionNotesCreate,
 	} {
 		manifest := fmt.Sprintf("version: provider/v1\nname: %s\ndescription: test\ncommand: [true]\nactions:\n  %s:\n    description: test\n", name, action)
 		if err := os.WriteFile(filepath.Join(providers, name+".yaml"), []byte(manifest), 0o600); err != nil {
@@ -407,9 +430,14 @@ func TestNoteProviderCompletionUsesConfigAndAction(t *testing.T) {
 	if output != "writer\n" {
 		t.Fatalf("writer completion = %q", output)
 	}
+	context = fmt.Sprintf(`changes note generate --config %q --provider `, config)
+	output = runNoteCLI(t, t.TempDir(), "__values", "note-generators", context)
+	if output != "generator\n" {
+		t.Fatalf("generator completion = %q", output)
+	}
 	context = fmt.Sprintf(`changes provider validate --config %q `, config)
 	output = runNoteCLI(t, t.TempDir(), "__values", "providers", context)
-	if output != "reader\nwriter\n" {
+	if output != "generator\nreader\nwriter\n" {
 		t.Fatalf("provider completion = %q", output)
 	}
 }
@@ -451,22 +479,63 @@ func TestFakeNoteProviderProcess(t *testing.T) {
 			Target: requestNoteTarget(request), Quality: provider.PlacementExact,
 		},
 	}
-	if request.Action == provider.ActionNotesCreate {
+	responseNotes := []provider.Note{note}
+	if request.Action == provider.ActionNotesGenerate {
 		note = provider.Note{
-			ID: "created", Source: "fake", SourceID: "created", Summary: request.Note.Summary,
-			Author: request.Note.Author, Origin: request.Note.Origin, Authority: provider.NoteAuthorityAdvisory,
-			State: provider.NoteStateOpen, Anchor: request.Note.Anchor,
+			ID: "generated", Source: "fake", SourceID: "generated", Summary: "Generated review note",
+			Rationale: "This line changes behavior.", Author: "review-agent",
+			Origin: provider.NoteOriginAgent, Authority: provider.NoteAuthorityAdvisory,
+			State: provider.NoteStateOpen,
+			Anchor: provider.NoteAnchor{
+				Path: "main.go", Side: provider.NoteSideRight, Line: 2,
+				Base: request.Base, Head: request.Head, Fingerprint: request.Fingerprint,
+				Target: requestNoteTarget(request),
+			},
 			Placement: provider.NotePlacement{
-				Path: request.Note.Anchor.Path, Side: request.Note.Anchor.Side,
-				StartSide: request.Note.Anchor.StartSide, StartLine: request.Note.Anchor.StartLine,
-				Line: request.Note.Anchor.Line, Base: request.Base, Head: request.Head,
-				Fingerprint: request.Fingerprint, Target: requestNoteTarget(request),
-				Quality: provider.PlacementExact,
+				Path: "main.go", Side: provider.NoteSideRight, Line: 2,
+				Base: request.Base, Head: request.Head, Fingerprint: request.Fingerprint,
+				Target: requestNoteTarget(request), Quality: provider.PlacementExact,
 			},
 		}
+		second := note
+		second.ID = "generated-2"
+		second.SourceID = "generated-2"
+		second.Summary = "Second generated review note"
+		second.Anchor.Line = 1
+		second.Placement.Line = 1
+		responseNotes = []provider.Note{note, second}
+	}
+	if request.Action == provider.ActionNotesCreate {
+		drafts := request.Notes
+		if request.Note != nil {
+			drafts = []provider.NoteDraft{*request.Note}
+		}
+		notes := make([]provider.Note, 0, len(drafts))
+		for index, draft := range drafts {
+			sourceID := "created"
+			if len(drafts) > 1 {
+				sourceID = fmt.Sprintf("created-%d", index+1)
+			}
+			notes = append(notes, provider.Note{
+				ID: sourceID, Source: "fake", SourceID: sourceID, Summary: draft.Summary,
+				Author: draft.Author, Origin: draft.Origin, Authority: provider.NoteAuthorityAdvisory,
+				State: provider.NoteStateOpen, Anchor: draft.Anchor,
+				Placement: provider.NotePlacement{
+					Path: draft.Anchor.Path, Side: draft.Anchor.Side,
+					StartSide: draft.Anchor.StartSide, StartLine: draft.Anchor.StartLine,
+					Line: draft.Anchor.Line, Base: request.Base, Head: request.Head,
+					Fingerprint: request.Fingerprint, Target: requestNoteTarget(request),
+					Quality: provider.PlacementExact,
+				},
+			})
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(provider.Response{Version: provider.ProtocolVersion, Notes: notes}); err != nil {
+			t.Fatal(err)
+		}
+		os.Exit(0)
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(provider.Response{
-		Version: provider.ProtocolVersion, Notes: []provider.Note{note},
+		Version: provider.ProtocolVersion, Notes: responseNotes,
 	}); err != nil {
 		t.Fatal(err)
 	}

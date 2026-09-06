@@ -1,8 +1,11 @@
 package provider
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/roshbhatia/go-utils/diffview"
 )
 
 func TestValidateNoteAcceptsLineAndFileNotes(t *testing.T) {
@@ -88,14 +91,92 @@ func TestValidateProviderResponseQualifiesAndDeduplicatesNotes(t *testing.T) {
 	}{
 		{name: "source", action: ActionNotes, response: Response{Notes: []Note{func() Note { copy := note; copy.Source = "other"; return copy }()}}, want: "source must be provider name"},
 		{name: "duplicate", action: ActionNotes, response: Response{Notes: []Note{note, note}}, want: "duplicate note id"},
-		{name: "empty create", action: ActionNotesCreate, response: Response{}, want: "exactly one note"},
-		{name: "many create", action: ActionNotesCreate, response: Response{Notes: []Note{note, func() Note { copy := note; copy.ID = "local:2"; copy.SourceID = "2"; return copy }()}}, want: "exactly one note"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := validateProviderResponse("local", test.action, test.response); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestValidateProviderResponseRejectsUnsafeSymbols(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		path   string
+		symbol diffview.Symbol
+		want   string
+	}{
+		{name: "path", path: "../main.go", symbol: diffview.Symbol{Kind: "function", Name: "run", From: 1, To: 2}, want: "repository-relative"},
+		{name: "name control", path: "main.go", symbol: diffview.Symbol{Kind: "function", Name: "run\nforged", From: 1, To: 2}, want: "control character"},
+		{name: "kind control", path: "main.go", symbol: diffview.Symbol{Kind: "\x1b]8;;bad\x07function", Name: "run", From: 1, To: 2}, want: "control character"},
+		{name: "range", path: "main.go", symbol: diffview.Symbol{Kind: "function", Name: "run", From: 2, To: 1}, want: "invalid range"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := Response{Symbols: map[string][]diffview.Symbol{test.path: {test.symbol}}}
+			if err := validateProviderResponse("symbols", ActionSymbols, response); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateProviderResponseAcceptsLogicalGroupTree(t *testing.T) {
+	response := Response{Groups: []ChangeGroup{
+		{ID: "flow", Title: "request flow"},
+		{ID: "handler", ParentID: "flow", Title: "validate request", Order: 1, Anchors: []GroupAnchor{{Path: "main.go", Side: NoteSideRight, Line: 2}}},
+	}}
+	if err := validateProviderResponse("groups", ActionGroups, response); err != nil {
+		t.Fatalf("group tree rejected: %v", err)
+	}
+}
+
+func TestValidateProviderResponseRejectsInvalidLogicalGroups(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		groups []ChangeGroup
+		want   string
+	}{
+		{name: "cycle", groups: []ChangeGroup{{ID: "one", Title: "one", ParentID: "two"}, {ID: "two", Title: "two", ParentID: "one"}}, want: "parent cycle"},
+		{name: "missing parent", groups: []ChangeGroup{{ID: "one", Title: "one", ParentID: "missing"}}, want: "missing parent"},
+		{name: "control", groups: []ChangeGroup{{ID: "one", Title: "one\nforged"}}, want: "unsafe"},
+		{name: "path separator", groups: []ChangeGroup{{ID: "one", Title: "one/two"}}, want: "unsafe"},
+		{name: "anchor path", groups: []ChangeGroup{{ID: "one", Title: "one", Anchors: []GroupAnchor{{Path: "../main.go"}}}}, want: "repository-relative"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateProviderResponse("groups", ActionGroups, Response{Groups: test.groups}); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateProviderResponseBoundsLogicalGroups(t *testing.T) {
+	tooMany := make([]ChangeGroup, maxChangeGroups+1)
+	for index := range tooMany {
+		tooMany[index] = ChangeGroup{ID: fmt.Sprintf("group-%d", index), Title: fmt.Sprintf("group %d", index)}
+	}
+	if err := validateChangeGroups(tooMany); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("group count error = %v", err)
+	}
+
+	anchors := make([]GroupAnchor, maxChangeGroupAnchors+1)
+	for index := range anchors {
+		anchors[index] = GroupAnchor{Path: fmt.Sprintf("file-%d.go", index)}
+	}
+	if err := validateChangeGroups([]ChangeGroup{{ID: "many", Title: "many", Anchors: anchors}}); err == nil || !strings.Contains(err.Error(), "anchors") {
+		t.Fatalf("anchor count error = %v", err)
+	}
+
+	deep := make([]ChangeGroup, maxChangeGroupDepth+2)
+	for index := range deep {
+		deep[index] = ChangeGroup{ID: fmt.Sprintf("depth-%d", index), Title: fmt.Sprintf("depth %d", index)}
+		if index > 0 {
+			deep[index].ParentID = deep[index-1].ID
+		}
+	}
+	if err := validateChangeGroups(deep); err == nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("group depth error = %v", err)
 	}
 }
 
@@ -145,6 +226,19 @@ func TestValidateCreateResponseRequiresRequestedAnchorAndPlacementPath(t *testin
 	}
 }
 
+func TestValidateCreateResponseSupportsMatchingBatch(t *testing.T) {
+	one := validNote()
+	two := validNote()
+	two.ID, two.SourceID, two.Anchor.Line, two.Placement.Line = "local:2", "2", 2, 2
+	request := Request{Action: ActionNotesCreate, Notes: []NoteDraft{{Anchor: one.Anchor}, {Anchor: two.Anchor}}}
+	if err := validateCreateResponse(request, Response{Notes: []Note{one, two}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCreateResponse(request, Response{Notes: []Note{one}}); err == nil || !strings.Contains(err.Error(), "return 2") {
+		t.Fatalf("batch count error = %v", err)
+	}
+}
+
 func TestValidateResponseComparisonRejectsForeignPlacement(t *testing.T) {
 	note := validNote()
 	request := Request{Action: ActionNotes, Fingerprint: "current"}
@@ -168,6 +262,38 @@ func TestValidateResponseComparisonRejectsForeignPlacement(t *testing.T) {
 	note.Anchor.Base = "foreign"
 	if err := validateResponseComparison(request, Response{Notes: []Note{note}}); err == nil || !strings.Contains(err.Error(), "anchor endpoints") {
 		t.Fatalf("anchor endpoint error = %v", err)
+	}
+}
+
+func TestValidateGeneratedNoteRequiresMatchingAnchorAndPlacement(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare func(*Request, *Note)
+	}{
+		{name: "line", prepare: func(_ *Request, note *Note) { note.Placement.Line++ }},
+		{name: "fingerprint", prepare: func(_ *Request, note *Note) { note.Anchor.Fingerprint = "foreign" }},
+		{name: "committed base", prepare: func(request *Request, note *Note) {
+			request.Base, request.Head, request.To = "current-base", "current-head", "current-head"
+			note.Anchor.Target, note.Placement.Target = NoteTargetCommits, NoteTargetCommits
+			note.Anchor.Base, note.Anchor.Head = "original-base", request.Head
+			note.Placement.Base, note.Placement.Head = request.Base, request.Head
+		}},
+		{name: "committed head", prepare: func(request *Request, note *Note) {
+			request.Base, request.Head, request.To = "current-base", "current-head", "current-head"
+			note.Anchor.Target, note.Placement.Target = NoteTargetCommits, NoteTargetCommits
+			note.Anchor.Base, note.Anchor.Head = request.Base, "original-head"
+			note.Placement.Base, note.Placement.Head = request.Base, request.Head
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := Request{Action: ActionNotesGenerate, Fingerprint: "current"}
+			note := validNote()
+			note.Anchor.Fingerprint, note.Placement.Fingerprint = request.Fingerprint, request.Fingerprint
+			test.prepare(&request, &note)
+			if err := validateResponseComparison(request, Response{Notes: []Note{note}}); err == nil || !strings.Contains(err.Error(), "anchor and placement") {
+				t.Fatalf("generated mismatch error = %v", err)
+			}
+		})
 	}
 }
 

@@ -1,5 +1,5 @@
-// changes-provider-local-notes reads and writes the XDG note record shared
-// with sysinit. It preserves the version 1 envelope and legacy note fields.
+// changes-provider-local-notes reads and writes the version 1 XDG note record.
+// It preserves unknown envelope and record fields for compatible updates.
 package main
 
 import (
@@ -81,6 +81,7 @@ func (doc document) MarshalJSON() ([]byte, error) {
 
 type storedNote struct {
 	ID         string               `json:"id"`
+	Key        string               `json:"key,omitempty"`
 	File       string               `json:"file"`
 	Line       int                  `json:"line"`
 	Summary    string               `json:"summary"`
@@ -182,52 +183,12 @@ func list(request provider.Request) (provider.Response, error) {
 }
 
 func create(request provider.Request) (provider.Response, error) {
-	if request.Note == nil {
-		return provider.Response{}, errors.New("create requires note")
+	drafts := request.Notes
+	if request.Note != nil {
+		drafts = []provider.NoteDraft{*request.Note}
 	}
-	draft := *request.Note
-	anchorFile, err := storedPath(request.Directory, draft.Anchor.Path)
-	if err != nil {
-		return provider.Response{}, err
-	}
-	compatibilityFile, err := compatibilityStoredPath(request.Directory, anchorFile)
-	if err != nil {
-		return provider.Response{}, err
-	}
-	id, err := newID()
-	if err != nil {
-		return provider.Response{}, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	context := cleanOneLine(draft.Anchor.Context)
-	comparison := draft.Anchor
-	rationale := cleanText(draft.Rationale)
-	stored := storedNote{
-		ID: id, File: compatibilityFile, Line: draft.Anchor.Line,
-		Summary: strings.TrimSpace(cleanOneLine(draft.Summary)),
-		Author:  strings.TrimSpace(cleanOneLine(draft.Author)),
-		Origin:  draft.Origin, Anchor: context, Session: cleanOneLine(draft.Session),
-		CreatedAt: now, Comparison: &comparison,
-	}
-	if stored.Summary == "" || stored.Author == "" {
-		return provider.Response{}, errors.New("summary and author must remain non-empty after removing control bytes")
-	}
-	if rationale != "" {
-		stored.Rationale = &rationale
-	}
-	if stored.Origin == provider.NoteOriginUser {
-		stored.State = "open"
-	}
-	raw, err := json.Marshal(stored)
-	if err != nil {
-		return provider.Response{}, err
-	}
-	note, ok, err := normalize(request, stored, nil)
-	if err != nil {
-		return provider.Response{}, err
-	}
-	if !ok {
-		return provider.Response{}, errors.New("created note did not match its comparison")
+	if len(drafts) == 0 {
+		return provider.Response{}, errors.New("create requires note or notes")
 	}
 	path := recordFile(request)
 	release, err := lock(path)
@@ -242,15 +203,111 @@ func create(request provider.Request) (provider.Response, error) {
 	if err := validateStoredNotes(doc.Notes); err != nil {
 		return provider.Response{}, err
 	}
-	doc.Notes = append(doc.Notes, raw)
-	if err := publish(path, doc); err != nil {
-		return provider.Response{}, err
+	byKey := make(map[string]storedNote, len(doc.Notes))
+	for _, raw := range doc.Notes {
+		var stored storedNote
+		if err := decodeOne(raw, &stored); err != nil {
+			return provider.Response{}, fmt.Errorf("the note store contains an invalid record: %w", err)
+		}
+		if stored.Key != "" {
+			byKey[stored.Key] = stored
+		}
 	}
-	return provider.Response{Version: provider.ProtocolVersion, Notes: []provider.Note{note}}, nil
+	created := make([]provider.Note, 0, len(drafts))
+	changed := false
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, draft := range drafts {
+		if existing, ok := byKey[draft.Key]; draft.Key != "" && ok {
+			if !sameDraft(existing, draft) {
+				return provider.Response{}, fmt.Errorf("note key %q already names different content", draft.Key)
+			}
+			note, matches, err := normalize(request, existing, nil)
+			if err != nil {
+				return provider.Response{}, err
+			}
+			if !matches {
+				return provider.Response{}, fmt.Errorf("note key %q belongs to another comparison", draft.Key)
+			}
+			created = append(created, note)
+			continue
+		}
+		stored, raw, note, err := prepareStoredNote(request, draft, now)
+		if err != nil {
+			return provider.Response{}, err
+		}
+		doc.Notes = append(doc.Notes, raw)
+		if stored.Key != "" {
+			byKey[stored.Key] = stored
+		}
+		created = append(created, note)
+		changed = true
+	}
+	if changed {
+		if err := publish(path, doc); err != nil {
+			return provider.Response{}, err
+		}
+	}
+	return provider.Response{Version: provider.ProtocolVersion, Notes: created}, nil
+}
+
+func prepareStoredNote(request provider.Request, draft provider.NoteDraft, now string) (storedNote, json.RawMessage, provider.Note, error) {
+	anchorFile, err := storedPath(request.Directory, draft.Anchor.Path)
+	if err != nil {
+		return storedNote{}, nil, provider.Note{}, err
+	}
+	compatibilityFile, err := compatibilityStoredPath(request.Directory, anchorFile)
+	if err != nil {
+		return storedNote{}, nil, provider.Note{}, err
+	}
+	id, err := newID()
+	if err != nil {
+		return storedNote{}, nil, provider.Note{}, err
+	}
+	comparison := draft.Anchor
+	stored := storedNote{
+		ID: id, Key: draft.Key, File: compatibilityFile, Line: draft.Anchor.Line,
+		Summary: strings.TrimSpace(cleanOneLine(draft.Summary)),
+		Author:  strings.TrimSpace(cleanOneLine(draft.Author)), Origin: draft.Origin,
+		Anchor: cleanOneLine(draft.Anchor.Context), Session: cleanOneLine(draft.Session),
+		CreatedAt: now, Comparison: &comparison,
+	}
+	if stored.Summary == "" || stored.Author == "" {
+		return storedNote{}, nil, provider.Note{}, errors.New("summary and author must remain non-empty after removing control bytes")
+	}
+	if rationale := cleanText(draft.Rationale); rationale != "" {
+		stored.Rationale = &rationale
+	}
+	if stored.Origin == provider.NoteOriginUser {
+		stored.State = "open"
+	}
+	raw, err := json.Marshal(stored)
+	if err != nil {
+		return storedNote{}, nil, provider.Note{}, err
+	}
+	note, ok, err := normalize(request, stored, nil)
+	if err != nil {
+		return storedNote{}, nil, provider.Note{}, err
+	}
+	if !ok {
+		return storedNote{}, nil, provider.Note{}, errors.New("created note did not match its comparison")
+	}
+	return stored, raw, note, nil
+}
+
+func sameDraft(stored storedNote, draft provider.NoteDraft) bool {
+	rationale := ""
+	if stored.Rationale != nil {
+		rationale = *stored.Rationale
+	}
+	return stored.Key == draft.Key && stored.Summary == strings.TrimSpace(cleanOneLine(draft.Summary)) &&
+		rationale == cleanText(draft.Rationale) && stored.Author == strings.TrimSpace(cleanOneLine(draft.Author)) &&
+		stored.Origin == draft.Origin && stored.Session == cleanOneLine(draft.Session) &&
+		stored.Comparison != nil && *stored.Comparison == draft.Anchor
 }
 
 func validateStoredNotes(records []json.RawMessage) error {
 	seen := make(map[string]bool, len(records))
+	seenKeys := make(map[string]bool, len(records))
 	for _, raw := range records {
 		var stored storedNote
 		if err := decodeOne(raw, &stored); err != nil {
@@ -264,6 +321,15 @@ func validateStoredNotes(records []json.RawMessage) error {
 			return fmt.Errorf("the note store contains duplicate id %q", stored.ID)
 		}
 		seen[stored.ID] = true
+		if stored.Key != "" {
+			if strings.IndexFunc(stored.Key, unicode.IsControl) >= 0 || len([]rune(stored.Key)) > 200 {
+				return errors.New("the note store contains an invalid idempotency key")
+			}
+			if seenKeys[stored.Key] {
+				return fmt.Errorf("the note store contains duplicate key %q", stored.Key)
+			}
+			seenKeys[stored.Key] = true
+		}
 		if stored.Origin != provider.NoteOriginAgent && stored.Origin != provider.NoteOriginUser {
 			return fmt.Errorf("the note store contains an invalid origin %q", stored.Origin)
 		}

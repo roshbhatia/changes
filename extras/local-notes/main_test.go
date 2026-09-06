@@ -67,6 +67,58 @@ func TestCreateListAndReanchorNote(t *testing.T) {
 	}
 }
 
+func TestBatchCreateIsAtomicAndIdempotent(t *testing.T) {
+	repository, request := localFixture(t)
+	for _, path := range []string{"one.go", "two.go"} {
+		if err := os.WriteFile(filepath.Join(repository, path), []byte("changed\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request.Notes = []provider.NoteDraft{
+		{Key: "generator:one", Summary: "First", Author: "agent", Origin: provider.NoteOriginAgent,
+			Anchor: provider.NoteAnchor{Path: "one.go", Side: provider.NoteSideRight, Line: 1, Base: request.Base,
+				Fingerprint: request.Fingerprint, Target: provider.NoteTargetWorking}},
+		{Key: "generator:two", Summary: "Second", Author: "agent", Origin: provider.NoteOriginAgent,
+			Anchor: provider.NoteAnchor{Path: "two.go", Side: provider.NoteSideRight, Line: 1, Base: request.Base,
+				Fingerprint: request.Fingerprint, Target: provider.NoteTargetWorking}},
+	}
+	first, err := create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := create(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Notes) != 2 || len(second.Notes) != 2 || first.Notes[0].ID != second.Notes[0].ID || first.Notes[1].ID != second.Notes[1].ID {
+		t.Fatalf("idempotent responses = %+v then %+v", first.Notes, second.Notes)
+	}
+	request.Note, request.Notes = nil, nil
+	request.Files = []string{"one.go", "two.go"}
+	listed, err := list(request)
+	if err != nil || len(listed.Notes) != 2 {
+		t.Fatalf("stored notes = %+v, error = %v", listed.Notes, err)
+	}
+
+	request.Notes = []provider.NoteDraft{firstDraft(request, "valid.go"), firstDraft(request, "../invalid.go")}
+	if _, err := create(request); err == nil {
+		t.Fatal("invalid batch was accepted")
+	}
+	request.Note, request.Notes = nil, nil
+	listed, err = list(request)
+	if err != nil || len(listed.Notes) != 2 {
+		t.Fatalf("invalid batch changed store: %+v, error = %v", listed.Notes, err)
+	}
+}
+
+func firstDraft(request provider.Request, path string) provider.NoteDraft {
+	return provider.NoteDraft{
+		Key: "batch:" + path, Summary: "Batch", Author: "agent", Origin: provider.NoteOriginAgent,
+		Anchor: provider.NoteAnchor{Path: path, Side: provider.NoteSideRight, Line: 1, Base: request.Base,
+			Fingerprint: request.Fingerprint, Target: provider.NoteTargetWorking},
+	}
+}
+
 func TestDecodeRequestRejectsUnknownFields(t *testing.T) {
 	_, err := decodeRequest(bytes.NewBufferString(`{"version":"changes.provider/v1","validaton":true}`))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
@@ -306,7 +358,7 @@ func TestCreatePreservesUnknownEnvelopeFields(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"version":1,"notes":[],"owner":{"name":"sysinit"}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":1,"notes":[],"owner":{"name":"other-client"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	request.Note = &provider.NoteDraft{
@@ -330,7 +382,7 @@ func TestCreatePreservesUnknownEnvelopeFields(t *testing.T) {
 	var owner struct {
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(envelope["owner"], &owner); err != nil || owner.Name != "sysinit" {
+	if err := json.Unmarshal(envelope["owner"], &owner); err != nil || owner.Name != "other-client" {
 		t.Fatalf("owner extension = %s, %v", envelope["owner"], err)
 	}
 }
@@ -709,7 +761,6 @@ func TestProcessExitReleasesLock(t *testing.T) {
 		"GO_WANT_LOCAL_NOTE_LOCK_CRASH=1",
 		"LOCAL_NOTE_LOCK_PATH="+path,
 		"XDG_STATE_HOME="+state,
-		"SYSINIT_PATHS_MANIFEST="+filepath.Join(state, "missing-paths.json"),
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("lock child: %v\n%s", err, output)
@@ -738,7 +789,6 @@ func localFixture(t *testing.T) (string, provider.Request) {
 	t.Helper()
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
-	t.Setenv("SYSINIT_PATHS_MANIFEST", filepath.Join(state, "missing-paths.json"))
 	repository := t.TempDir()
 	return repository, provider.Request{
 		Directory: repository, Files: []string{"main.go"}, Base: "base",

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -467,7 +468,13 @@ func validationNote() provider.Note {
 }
 
 func runGH(directory string, arguments ...string) ([]byte, error) {
-	command := exec.Command("gh", arguments...)
+	executable := strings.TrimSpace(os.Getenv("CHANGES_GH_COMMAND"))
+	if executable == "" {
+		executable = "gh"
+	} else if !filepath.IsAbs(executable) {
+		return nil, errors.New("CHANGES_GH_COMMAND must be an absolute path")
+	}
+	command := exec.Command(executable, arguments...)
 	command.Dir = directory
 	command.Env = githubEnvironment()
 	stdout := cappedBuffer{limit: maxOutput}

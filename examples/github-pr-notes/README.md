@@ -1,5 +1,7 @@
 # Read GitHub pull request review notes
 
+[![GitHub pull request notes demo](demo.gif)](demo.tape)
+
 Install the read-only GitHub provider and authenticate `gh` for the repository
 host:
 
@@ -41,3 +43,9 @@ comment, reply, resolve a thread, or send a notification.
 GitHub can return more than 100 replies in one thread without a usable nested
 cursor. The provider fails closed in that case instead of returning an
 incomplete thread.
+
+Replay the [VHS tape](demo.tape) with a deterministic GitHub fixture:
+
+```bash
+nix develop -c ./hack/example-demos.sh github-pr-notes
+```

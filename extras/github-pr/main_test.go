@@ -125,6 +125,14 @@ printf '%s\n' '{}'
 	}
 }
 
+func TestRunGHRequiresAbsoluteOverride(t *testing.T) {
+	t.Setenv("CHANGES_GH_COMMAND", "gh-test-double")
+	_, err := runGH(t.TempDir(), "version")
+	if err == nil || !strings.Contains(err.Error(), "absolute path") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestGitHubMergeBaseUsesCompareAPI(t *testing.T) {
 	directory := t.TempDir()
 	script := filepath.Join(directory, "gh")
