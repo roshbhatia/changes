@@ -7,10 +7,10 @@ fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"; rm -f "$result_file"' EXIT
 
 printf '%s\n' CHANGES_PROJECT_INSTRUCTION_SENTINEL >"$fixture/AGENTS.md"
-"$codex_command" -C "$fixture" debug prompt-input probe |
-  grep -Fq CHANGES_PROJECT_INSTRUCTION_SENTINEL
-if "$codex_command" -C "$fixture" -c project_doc_max_bytes=0 debug prompt-input probe |
-  grep -Fq CHANGES_PROJECT_INSTRUCTION_SENTINEL; then
+"$codex_command" -C "$fixture" debug prompt-input probe >"$result_file"
+grep -Fq CHANGES_PROJECT_INSTRUCTION_SENTINEL "$result_file"
+"$codex_command" -C "$fixture" -c project_doc_max_bytes=0 debug prompt-input probe >"$result_file"
+if grep -Fq CHANGES_PROJECT_INSTRUCTION_SENTINEL "$result_file"; then
   echo "project_doc_max_bytes=0 still loaded AGENTS.md" >&2
   exit 1
 fi
