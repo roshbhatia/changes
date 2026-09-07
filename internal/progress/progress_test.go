@@ -24,13 +24,38 @@ func TestIndicatorAnimatesAndClearsATerminal(t *testing.T) {
 	}
 	defer terminal.Close()
 	defer peer.Close()
+	type result struct {
+		output []byte
+		err    error
+	}
+	results := make(chan result, 1)
+	go func() {
+		var output bytes.Buffer
+		buffer := make([]byte, 4096)
+		for {
+			read, readErr := terminal.Read(buffer)
+			if read > 0 {
+				_, _ = output.Write(buffer[:read])
+			}
+			if bytes.Contains(output.Bytes(), []byte("reading changes")) && bytes.Contains(output.Bytes(), []byte("\x1b[2K")) {
+				results <- result{output: output.Bytes()}
+				return
+			}
+			if readErr != nil {
+				results <- result{output: output.Bytes(), err: readErr}
+				return
+			}
+		}
+	}()
 	indicator := Start(peer, "reading changes", true)
 	time.Sleep(100 * time.Millisecond)
 	indicator.Stop()
-	output := make([]byte, 4096)
-	read, _ := terminal.Read(output)
-	output = output[:read]
-	if !bytes.Contains(output, []byte("reading changes")) || !bytes.Contains(output, []byte("\x1b[2K")) {
-		t.Fatalf("terminal output = %q", output)
+	select {
+	case read := <-results:
+		if read.err != nil {
+			t.Fatalf("read terminal: %v; output = %q", read.err, read.output)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out reading terminal animation and clear sequence")
 	}
 }

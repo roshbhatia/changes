@@ -1,9 +1,9 @@
 version: 2
 change: interactive-workspace
 decision: approved
-note: v0.10.0 release and sysinit adoption handoff verified.
+note: v0.10.0 release verified; PTY regression reads complete split terminal output.
 change_hash: acc2a6a4df867de5
-base_commit: 75c9b643ef453fe3bead50274d31112abc85cfd5
+base_commit: f9eea97ec312c213576f78f7f4c8d9da1686a341
 items:
     0e1f1d19e7bd18b9:
         hash: ed9fa584a2cb4364
