@@ -48,5 +48,5 @@
 - [x] 5.1 Add the interactive workflow README and VHS tape. `writes:` `examples/interactive-workspace/README.md`, `examples/interactive-workspace/demo.tape` `deps:` 4.3
 - [x] 5.2 Record the GIF and integrate media freshness, release contents, and root documentation. `writes:` `examples/interactive-workspace/demo.gif`, `examples/interactive-workspace/.demo.sha256`, `hack/**`, `README.md`, `flake.nix` `deps:` 5.1
 - [x] 5.3 Run focused tests, race tests, generation checks, demo checks, the complete diff inspection, calldiff, and `nix flake check -L`. `writes:` none `deps:` 5.2
-- [ ] 5.4 Commit, push, tag the next minor version, verify native release jobs, download every asset, check checksums and archive contents, and notify the active sysinit Codex session. `writes:` `flake.nix`, `openspec/**` `deps:` 5.3
+- [x] 5.4 Commit, push, tag the next minor version, verify native release jobs, download every asset, check checksums and archive contents, and notify the active sysinit Codex session. `writes:` `flake.nix`, `openspec/**` `deps:` 5.3
 - [x] 5.5 Adversarial review: skipped by explicit owner direction; release verification remains required. `writes:` `openspec/changes/interactive-workspace/review.md` `deps:` none

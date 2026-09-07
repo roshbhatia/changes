@@ -1,9 +1,9 @@
 version: 2
 change: interactive-workspace
 decision: approved
-note: Owner approved implementation; final adversarial review explicitly skipped.
+note: v0.10.0 release and sysinit adoption handoff verified.
 change_hash: acc2a6a4df867de5
-base_commit: 2f78707ddadda942cb1c97aaec0d49fdb38881aa
+base_commit: 75c9b643ef453fe3bead50274d31112abc85cfd5
 items:
     0e1f1d19e7bd18b9:
         hash: ed9fa584a2cb4364
