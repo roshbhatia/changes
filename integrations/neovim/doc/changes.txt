@@ -1,0 +1,56 @@
+*changes-notes.txt*                  Add Changes diff notes from Neovim
+
+==============================================================================
+INTRODUCTION                                                *changes-notes*
+
+changes.nvim collects note text through |vim.ui.input()| and invokes
+`changes note add` through |vim.system()|. It does not invoke a shell.
+
+The current buffer must name a file inside a Git repository. The default
+target is the current line on the right side of the working-tree comparison.
+Save the buffer before adding a note. The adapter rejects unsaved content
+and proves that the bounded buffer bytes equal its regular disk file. It
+supports ordinary UTF-8 file buffers without a byte-order mark. Changes also
+requires the saved file digest to match the selected working, index, or commit
+side in one stable comparison capture. Empty, final-newline, missing-final-
+newline, and CRLF files retain their disk bytes. Changes disables Git text
+conversion and rejects content-changing working-tree filters or encodings. The
+adapter rejects target files larger than 16 MiB.
+
+==============================================================================
+COMMANDS                                     *changes-notes-commands*
+
+                                                        *:ChangesNote*
+:ChangesNote
+:[range]ChangesNote
+        Prompt for a note on the current line or given line range.
+
+==============================================================================
+LUA API                                             *changes-notes-api*
+
+require("changes.notes").setup({opts})
+        Set defaults. Supported fields are `command`, `side`, `author`,
+        `origin`, `session`, `provider`, `commit`, `from`, `to`, and `staged`.
+        `command` may be an executable string or an argv list.
+
+require("changes.notes").prompt({opts}, {callback})
+        Prompt with |vim.ui.input()|, then call add(). Cancellation and empty
+        input do not start a process. The buffer, path, directory, and range
+        are captured before the prompt opens.
+
+require("changes.notes").add({opts}, {callback})
+        Create a note without prompting. `message` is required. Optional
+        `buf`, `start_line`, and `line` fields select the location. The
+        callback receives `(error, note)`.
+
+==============================================================================
+MAPPINGS                                             *changes-notes-maps*
+
+<Plug>(changes-note)
+        Prompt on the current line in Normal mode or the selected line range
+        in Visual mode. The plugin does not install a user keybinding.
+
+Example: >lua
+  vim.keymap.set({ "n", "x" }, "<leader>cn", "<Plug>(changes-note)")
+<
+vim:tw=78:ts=8:noet:ft=help:norl:

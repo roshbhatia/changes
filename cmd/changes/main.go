@@ -428,7 +428,7 @@ func (r renderer) noteContext(ctx context.Context, patches []string) noteRead {
 			failedSources["*"] = true
 			continue
 		}
-		if currentDisplayed != patches[index] {
+		if snapshot.placementPatch != patches[index] || currentDisplayed != patches[index] {
 			fmt.Fprintf(os.Stderr, "changes: note comparison changed before rendering %s\n", spec.Dir)
 			complete = false
 			failedSources["*"] = true
@@ -436,7 +436,7 @@ func (r renderer) noteContext(ctx context.Context, patches []string) noteRead {
 		}
 		displayed := notePathsInPatch(patches[index])
 		result := readNotes(
-			ctx, spec, displayed, snapshot.patch, snapshot.base, snapshot.head,
+			ctx, spec, displayed, snapshot.patch, snapshot.placementPatch, snapshot.base, snapshot.head,
 			readers,
 		)
 		for _, failure := range result.failures {
@@ -1974,6 +1974,7 @@ directory. Each repository's files hang under its own name.`,
 							{Name: "author", Description: "Note author", Value: true},
 							{Name: "commit", Description: "First-parent commit comparison", Value: true, CompletionCommand: completionValuesInvocation("repository")},
 							{Name: "config", Description: "YAML configuration file", Value: true},
+							{Name: "expected-file-sha256", Description: "Require the selected file side to match this SHA-256 digest", Value: true},
 							{Name: "file", Description: "Repository file to annotate", Value: true, CompletionCommand: completionValuesInvocation("paths")},
 							{Name: "from", Description: "Left revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
 							{Name: "json", Description: "Print the created note as JSON"},

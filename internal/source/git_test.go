@@ -17,6 +17,78 @@ func TestStagedDiffRejectsTwoRevisionsBeforeGit(t *testing.T) {
 	}
 }
 
+func TestNoLazyFetchEnvironmentIsScopedBySpec(t *testing.T) {
+	t.Setenv("GIT_NO_LAZY_FETCH", "0")
+	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
+	t.Setenv("GIT_REPLACE_REF_BASE", "refs/replace/custom/")
+	values := func(spec Spec) map[string]string {
+		found := map[string]string{}
+		for _, entry := range spec.command("version").Env {
+			name, value, ok := strings.Cut(entry, "=")
+			if ok && strings.HasPrefix(name, "GIT_") {
+				found[name] = value
+			}
+		}
+		return found
+	}
+	if got := values(Spec{}); got["GIT_NO_LAZY_FETCH"] != "0" || got["GIT_NO_REPLACE_OBJECTS"] != "0" ||
+		got["GIT_REPLACE_REF_BASE"] != "refs/replace/custom/" {
+		t.Fatalf("default environment = %#v", got)
+	}
+	if got := values(Spec{NoLazyFetch: true}); got["GIT_NO_LAZY_FETCH"] != "1" || got["GIT_NO_REPLACE_OBJECTS"] != "1" {
+		t.Fatalf("note environment = %#v", got)
+	} else if _, ok := got["GIT_REPLACE_REF_BASE"]; ok {
+		t.Fatalf("note environment kept replacement ref base: %#v", got)
+	}
+}
+
+func TestNoLazyFetchDisablesRepositoryFSMonitorHook(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "file.txt")
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{
+		{"init", "--quiet"},
+		{"config", "user.name", "Changes test"},
+		{"config", "user.email", "changes@example.invalid"},
+		{"add", "file.txt"},
+		{"commit", "--quiet", "-m", "fixture"},
+	} {
+		if err := git.Run(directory, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(path, []byte("after\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(directory, "fsmonitor")
+	marker := filepath.Join(directory, "fsmonitor-ran")
+	script := "#!/bin/sh\n: > \"$(dirname \"$0\")/fsmonitor-ran\"\nprintf '%s\\0' \"$2\"\n"
+	if err := os.WriteFile(hook, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := git.Run(directory, "config", "core.fsmonitor", hook); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (Spec{Dir: directory}).Diff(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("ordinary diff did not run the configured fsmonitor hook: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Spec{Dir: directory}).NoteDiff(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("note diff ran the configured fsmonitor hook: %v", err)
+	}
+}
+
 func TestFilesPreservesDeletedPathAndComparisonIDs(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "deleted.txt")
@@ -182,6 +254,17 @@ func TestDiffArgumentsSeparateRefLikePaths(t *testing.T) {
 	}
 }
 
+func TestDiffDisablesTextConversion(t *testing.T) {
+	t.Parallel()
+	arguments, err := (Spec{}).args("never")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(arguments, "--no-textconv") {
+		t.Fatalf("diff arguments omitted --no-textconv: %#v", arguments)
+	}
+}
+
 func TestDiffUsesStablePrefixesWithMnemonicPrefixConfigured(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "main.go")
@@ -211,6 +294,222 @@ func TestDiffUsesStablePrefixesWithMnemonicPrefixConfigured(t *testing.T) {
 		!strings.Contains(patch, "--- a/main.go") || !strings.Contains(patch, "+++ b/main.go") {
 		t.Fatalf("diff used unstable prefixes:\n%s", patch)
 	}
+}
+
+func TestNoteDiffIgnoresLocalDiffPresentationConfiguration(t *testing.T) {
+	root := t.TempDir()
+	sourceDirectory := filepath.Join(root, "source")
+	if err := os.Mkdir(sourceDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sourceDirectory, "main.txt")
+	before := "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n"
+	after := strings.Replace(before, "six\n", "changed six\n", 1)
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{
+		{"init", "--quiet"},
+		{"config", "user.name", "Changes test"},
+		{"config", "user.email", "changes@example.invalid"},
+		{"add", "main.txt"},
+		{"commit", "--quiet", "-m", "base"},
+	} {
+		if err := git.Run(sourceDirectory, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(path, []byte(after), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"add", "main.txt"}, {"commit", "--quiet", "-m", "head"}} {
+		if err := git.Run(sourceDirectory, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	one := filepath.Join(root, "one")
+	two := filepath.Join(root, "two")
+	for _, clone := range []string{one, two} {
+		if err := git.Run(root, "clone", "--quiet", sourceDirectory, clone); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oneAttributes := filepath.Join(root, "one.attributes")
+	twoAttributes := filepath.Join(root, "two.attributes")
+	if err := os.WriteFile(oneAttributes, []byte("*.txt binary\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(twoAttributes, []byte("*.txt diff\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureDiffFixture(one, map[string]string{
+		"core.attributesFile": oneAttributes, "core.quotePath": "false", "diff.algorithm": "minimal", "diff.context": "1",
+		"diff.indentHeuristic": "true", "diff.interHunkContext": "9",
+		"diff.mnemonicPrefix": "true", "diff.suppressBlankEmpty": "true",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureDiffFixture(two, map[string]string{
+		"core.attributesFile": twoAttributes, "core.quotePath": "true", "diff.algorithm": "histogram", "diff.context": "8",
+		"diff.indentHeuristic": "false", "diff.interHunkContext": "0",
+		"diff.mnemonicPrefix": "false", "diff.suppressBlankEmpty": "false",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oneSpec := Spec{Dir: one, From: "HEAD^", To: "HEAD"}
+	twoSpec := Spec{Dir: two, From: "HEAD^", To: "HEAD"}
+	oneDisplayed, err := oneSpec.Diff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	twoDisplayed, err := twoSpec.Diff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneDisplayed == twoDisplayed {
+		t.Fatal("fixture diff configuration did not change the displayed patch")
+	}
+	oneNotes, err := oneSpec.NoteDiff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	twoNotes, err := twoSpec.NoteDiff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneNotes == "" || strings.Contains(oneNotes, "diff --git") || strings.Contains(oneNotes, "@@") {
+		t.Fatalf("note identity is not a non-empty raw diff: %q", oneNotes)
+	}
+	if oneNotes != twoNotes {
+		t.Fatalf("note identities differ across clones:\none: %q\ntwo: %q", oneNotes, twoNotes)
+	}
+	oneFiles, err := oneSpec.NoteFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	twoFiles, err := twoSpec.NoteFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(oneFiles, twoFiles) {
+		t.Fatalf("note files differ across clones: %#v and %#v", oneFiles, twoFiles)
+	}
+}
+
+func TestNoteDiffChangesWithTheComparedTree(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "main.txt")
+	prepare := func(value, message string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, arguments := range [][]string{{"add", "main.txt"}, {"commit", "--quiet", "-m", message}} {
+			if err := git.Run(directory, arguments...); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := git.Run(directory, "init", "--quiet"); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureDiffFixture(directory, map[string]string{"user.name": "Changes test", "user.email": "changes@example.invalid"}); err != nil {
+		t.Fatal(err)
+	}
+	prepare("base\n", "base")
+	base, err := git.Output(directory, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepare("first\n", "first")
+	firstHead, err := git.Output(directory, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := (Spec{Dir: directory, From: base, To: firstHead}).NoteDiff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := git.Run(directory, "checkout", "--quiet", "--detach", base); err != nil {
+		t.Fatal(err)
+	}
+	prepare("second\n", "second")
+	secondHead, err := git.Output(directory, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := (Spec{Dir: directory, From: base, To: secondHead}).NoteDiff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || second == "" || first == second {
+		t.Fatalf("raw identities for different trees = %q and %q", first, second)
+	}
+}
+
+func TestNoteDiffIgnoresReplacementRefs(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "main.txt")
+	if err := os.WriteFile(path, []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{
+		{"init", "--quiet"},
+		{"config", "user.name", "Changes test"},
+		{"config", "user.email", "changes@example.invalid"},
+		{"add", "main.txt"},
+		{"commit", "--quiet", "-m", "base"},
+	} {
+		if err := git.Run(directory, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(path, []byte("head\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"add", "main.txt"}, {"commit", "--quiet", "-m", "head"}} {
+		if err := git.Run(directory, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base, err := git.Output(directory, "rev-parse", "HEAD^")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := git.Output(directory, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := Spec{Dir: directory, From: base, To: head}
+	want, err := spec.NoteDiff()
+	if err != nil || want == "" {
+		t.Fatalf("initial note identity = %q, %v", want, err)
+	}
+	if err := git.Run(directory, "replace", base, head); err != nil {
+		t.Fatal(err)
+	}
+	got, err := spec.NoteDiff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("replacement ref changed note identity from %q to %q", want, got)
+	}
+	files, err := spec.NoteFiles()
+	if err != nil || !slices.Equal(files, []string{"main.txt"}) {
+		t.Fatalf("replacement ref changed note files: %#v, %v", files, err)
+	}
+}
+
+func configureDiffFixture(directory string, values map[string]string) error {
+	for name, value := range values {
+		if err := git.Run(directory, "config", name, value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func TestLimitedBufferBoundsGitPatchOutput(t *testing.T) {

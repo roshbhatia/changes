@@ -10,8 +10,9 @@ Each provider directory owns four parts: its manifest, adapter program,
 runtime dependency package, and validation contract. The root flake discovers
 directories that contain `package.nix`. It exports each one as
 `provider-<name>` without adding it to the default package closure, and creates
-an isolated check for every discovered package. A package wraps its runtime
-tools into the adapter path. It does not expose those tools as profile commands.
+an isolated check for every discovered package. Providers join `full` unless
+their package sets `includeInFull = false`. A package wraps its runtime tools
+into the adapter path. It does not expose those tools as profile commands.
 
 - `ast-grep/provider.yaml` advertises `changes.symbols` and runs
   `changes-provider-ast-grep`.
@@ -28,6 +29,10 @@ tools into the adapter path. It does not expose those tools as profile commands.
 - `github-pr/provider.yaml` advertises `changes.notes`. It reads pull request
   review threads through the authenticated `gh` command and never changes the
   pull request.
+- `git-notes/provider.yaml` advertises `changes.notes` and
+  `changes.notes.create` for committed comparisons. It stores canonical records
+  under `refs/notes/changes` and never fetches, merges, pushes, or changes Git
+  configuration. Its package stays outside `full` to avoid two default writers.
 
 Each adapter reads one JSON request from standard input and writes one JSON
 response. The manifest follows `provider/v1`, which Changes validates against
@@ -44,3 +49,16 @@ Run `changes provider validate` to exercise every configured provider against
 a synthetic working tree. This does not read or change the current repository.
 The GitHub and Codex providers return synthetic validation notes without
 network access.
+
+Share the Git notes ref only when you choose to change the remote repository:
+
+```bash
+git fetch origin refs/notes/changes:refs/notes/changes-incoming
+git notes --ref=refs/notes/changes merge \
+  -s cat_sort_uniq refs/notes/changes-incoming
+git push origin refs/notes/changes
+```
+
+A normal branch fetch or push does not include this ref. Resolve any conflicting
+stable note keys before using the provider again. Changes does not configure
+notes display or rewrite behavior.

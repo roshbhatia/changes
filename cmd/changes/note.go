@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -26,7 +28,10 @@ import (
 	gitutil "github.com/roshbhatia/go-utils/git"
 )
 
-const maxNoteMessageBytes = 1 << 20
+const (
+	maxNoteMessageBytes = 1 << 20
+	maxNoteFileBytes    = 16 << 20
+)
 
 type noteDocument struct {
 	Version string          `json:"version"`
@@ -111,16 +116,16 @@ func runNoteGenerate(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	generators, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesGenerate, *providerName, "generator")
+	generators, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesGenerate, *providerName, "generator", "provider")
 	if err != nil {
 		fail(err)
 	}
-	writers, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesCreate, *storeName, "store")
+	writers, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesCreate, *storeName, "store", "store")
 	if err != nil {
 		fail(err)
 	}
 	request := noteRequestWithIDs(spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head)
-	request.Patch = snapshot.patch
+	request.Patch = snapshot.placementPatch
 	ctx, cancel := context.WithTimeout(context.Background(), configured.Notes.GeneratorTimeout.Duration())
 	response, err := provider.Run(ctx, generators[0], provider.ActionNotesGenerate, request, provider.CachePolicy{})
 	cancel()
@@ -136,14 +141,14 @@ func runNoteGenerate(args []string) {
 		if !allowed[note.Anchor.Path] {
 			fail(fmt.Errorf("provider %s generated a note for unchanged path %q", generators[0].Manifest.Name, note.Anchor.Path))
 		}
-		if err := validateNoteVisibility(snapshot.patch, note); err != nil {
+		if err := validateNoteVisibility(snapshot.placementPatch, note); err != nil {
 			fail(fmt.Errorf("provider %s: %w", generators[0].Manifest.Name, err))
 		}
 		if note.Placement.Quality != provider.PlacementExact {
 			fail(fmt.Errorf("provider %s generated note %q without an exact placement", generators[0].Manifest.Name, note.ID))
 		}
 		contextLine, err := noteRangeInFilePatch(
-			snapshot.patch, note.Anchor.Path, note.Anchor.Side, note.Anchor.StartLine, note.Anchor.Line,
+			snapshot.placementPatch, note.Anchor.Path, note.Anchor.Side, note.Anchor.StartLine, note.Anchor.Line,
 		)
 		if err != nil {
 			fail(fmt.Errorf("provider %s: %w", generators[0].Manifest.Name, err))
@@ -154,7 +159,8 @@ func runNoteGenerate(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	if after.patch != snapshot.patch || after.base != snapshot.base || after.head != snapshot.head ||
+	if after.patch != snapshot.patch || after.placementPatch != snapshot.placementPatch ||
+		after.base != snapshot.base || after.head != snapshot.head ||
 		!slices.Equal(after.files, snapshot.files) {
 		fail(errors.New("selected comparison changed while generating notes"))
 	}
@@ -205,6 +211,7 @@ func runNoteAdd(args []string) {
 	origin := flags.String("origin", provider.NoteOriginUser, flagDescription(metadata, "origin"))
 	session := flags.String("session", "", flagDescription(metadata, "session"))
 	providerName := flags.String("provider", "", flagDescription(metadata, "provider"))
+	expectedFileSHA256 := flags.String("expected-file-sha256", "", flagDescription(metadata, "expected-file-sha256"))
 	asJSON := flags.Bool("json", false, flagDescription(metadata, "json"))
 	comparison := addNoteComparisonFlags(flags, metadata)
 	flags.Usage = func() {
@@ -237,6 +244,12 @@ func runNoteAdd(args []string) {
 	}
 	if messageSet && messageFileSet {
 		fail(errors.New("--message and --message-file are mutually exclusive"))
+	}
+	if *expectedFileSHA256 != "" {
+		decoded, decodeErr := hex.DecodeString(*expectedFileSHA256)
+		if decodeErr != nil || len(decoded) != sha256.Size {
+			fail(errors.New("--expected-file-sha256 must be a 64-character SHA-256 digest"))
+		}
 	}
 	configured, err := appconfig.Load(*configPath)
 	if err != nil {
@@ -278,13 +291,13 @@ func runNoteAdd(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	comparisonSpec := spec
-	comparisonSpec.Paths = nil
-	comparisonPatch, base, head, err := stableNoteComparison(comparisonSpec)
+	comparisonPatch, placementPatch, base, head, err := stableNoteComparison(
+		spec, relative, resolvedSide, *expectedFileSHA256,
+	)
 	if err != nil {
 		fail(err)
 	}
-	contextLine, err := noteRangeInFilePatch(comparisonPatch, relative, resolvedSide, *startLine, *line)
+	contextLine, err := noteRangeInFilePatch(placementPatch, relative, resolvedSide, *startLine, *line)
 	if err != nil {
 		fail(fmt.Errorf("%s: %w", relative, err))
 	}
@@ -302,12 +315,12 @@ func runNoteAdd(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	writable, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesCreate, *providerName, "store")
+	writable, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesCreate, *providerName, "writer", "provider")
 	if err != nil {
 		fail(err)
 	}
 	selected := writable[0]
-	request := noteRequestWithIDs(comparisonSpec, []string{relative}, comparisonPatch, base, head)
+	request := noteRequestWithIDs(spec, []string{relative}, comparisonPatch, base, head)
 	request.Note = draft
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(configured.Providers.Timeout))
 	response, err := provider.Run(ctx, selected, provider.ActionNotesCreate, request, provider.CachePolicy{})
@@ -372,7 +385,7 @@ func runNoteList(args []string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(configured.Providers.Timeout))
 	result := readNotes(
-		ctx, spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head,
+		ctx, spec, snapshot.files, snapshot.patch, snapshot.placementPatch, snapshot.base, snapshot.head,
 		readers,
 	)
 	cancel()
@@ -421,11 +434,11 @@ func noteSpec(cwd, file string, flags noteComparisonFlags) (source.Spec, string,
 	}
 	spec := source.Spec{Dir: root, From: flags.from, To: flags.to, Staged: flags.staged}
 	if flags.commit != "" {
-		head, err := gitutil.Output(root, "rev-parse", "--verify", flags.commit+"^{commit}")
+		head, err := noteGitOutput(root, "rev-parse", "--verify", flags.commit+"^{commit}")
 		if err != nil {
 			return source.Spec{}, "", fmt.Errorf("resolve --commit %q: %w", flags.commit, err)
 		}
-		base, err := gitutil.Output(root, "rev-parse", "--verify", strings.TrimSpace(head)+"^1")
+		base, err := noteGitOutput(root, "rev-parse", "--verify", strings.TrimSpace(head)+"^1")
 		if err != nil {
 			return source.Spec{}, "", fmt.Errorf("--commit %q has no first parent; use --from and --to", flags.commit)
 		}
@@ -458,6 +471,178 @@ func noteSpec(cwd, file string, flags noteComparisonFlags) (source.Spec, string,
 	return spec, relative, nil
 }
 
+func noteGitEnvironment() []string {
+	environment := gitutil.CleanEnv()
+	kept := environment[:0]
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, "GIT_NO_LAZY_FETCH=") ||
+			strings.HasPrefix(entry, "GIT_NO_REPLACE_OBJECTS=") ||
+			strings.HasPrefix(entry, "GIT_REPLACE_REF_BASE=") {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return append(kept, "GIT_NO_LAZY_FETCH=1", "GIT_NO_REPLACE_OBJECTS=1")
+}
+
+func noteGitCommand(directory string, arguments ...string) *exec.Cmd {
+	arguments = append([]string{"-c", "core.fsmonitor=false"}, arguments...)
+	command := exec.Command("git", arguments...)
+	command.Dir = directory
+	command.Env = noteGitEnvironment()
+	return command
+}
+
+func noteGitOutput(directory string, arguments ...string) (string, error) {
+	command := noteGitCommand(directory, arguments...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(arguments, " "), strings.TrimSpace(stderr.String()), err)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+func validateExpectedNoteFile(spec source.Spec, relative, side, expected string) error {
+	if expected == "" {
+		return nil
+	}
+	if err := validateExpectedNoteFileDomain(spec, relative, side); err != nil {
+		return err
+	}
+	content, err := noteComparisonFile(spec, relative, side)
+	if err != nil {
+		return err
+	}
+	actual := sha256.Sum256(content)
+	if !strings.EqualFold(hex.EncodeToString(actual[:]), expected) {
+		return errors.New("target file does not match the selected diff side")
+	}
+	return nil
+}
+
+func validateExpectedNoteFileDomain(spec source.Spec, relative, side string) error {
+	path := filepath.Join(spec.Dir, filepath.FromSlash(relative))
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("target path must be a regular file")
+	}
+	if side != provider.NoteSideRight || spec.Staged || spec.To != "" {
+		return nil
+	}
+	command := noteGitCommand(spec.Dir, "check-attr", "-z", "filter", "working-tree-encoding", "--", relative)
+	output := &noteFileBuffer{limit: maxNoteFileBytes}
+	var stderr bytes.Buffer
+	command.Stdout = output
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("inspect Git attributes for %s: %s: %w", relative, strings.TrimSpace(stderr.String()), err)
+	}
+	if output.exceeded {
+		return errors.New("Git attributes output exceeds the annotation limit")
+	}
+	fields := bytes.Split(output.Bytes(), []byte{0})
+	for index := 0; index+2 < len(fields); index += 3 {
+		attribute, value := string(fields[index+1]), string(fields[index+2])
+		if value != "" && value != "unspecified" && value != "unset" {
+			return fmt.Errorf("target file uses unsupported Git %s conversion", attribute)
+		}
+	}
+	return nil
+}
+
+func noteComparisonFile(spec source.Spec, relative, side string) ([]byte, error) {
+	object := ""
+	if side == provider.NoteSideRight {
+		switch {
+		case spec.Staged:
+			object = ":./" + relative
+		case spec.To != "":
+			object = spec.To + ":" + relative
+		default:
+			return readBoundedNoteFile(filepath.Join(spec.Dir, filepath.FromSlash(relative)))
+		}
+	} else {
+		switch {
+		case spec.Staged && spec.From != "":
+			object = spec.From + ":" + relative
+		case spec.Staged:
+			object = "HEAD:" + relative
+		case spec.From != "":
+			object = spec.From + ":" + relative
+		default:
+			object = ":./" + relative
+		}
+	}
+	command := noteGitCommand(spec.Dir, "show", object)
+	output := &noteFileBuffer{limit: maxNoteFileBytes}
+	var stderr bytes.Buffer
+	command.Stdout = output
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("read selected diff side for %s: %s: %w", relative, strings.TrimSpace(stderr.String()), err)
+	}
+	if output.exceeded {
+		return nil, fmt.Errorf("target file exceeds %d bytes", maxNoteFileBytes)
+	}
+	return output.Bytes(), nil
+}
+
+func readBoundedNoteFile(path string) ([]byte, error) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return nil, errors.New("target path must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return nil, errors.New("target path changed while opening it")
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxNoteFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(content) > maxNoteFileBytes {
+		return nil, fmt.Errorf("target file exceeds %d bytes", maxNoteFileBytes)
+	}
+	return content, nil
+}
+
+type noteFileBuffer struct {
+	bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (buffer *noteFileBuffer) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := buffer.limit - buffer.Len()
+	if remaining > 0 {
+		if remaining > len(value) {
+			remaining = len(value)
+		}
+		_, _ = buffer.Buffer.Write(value[:remaining])
+	}
+	if remaining < len(value) {
+		buffer.exceeded = true
+	}
+	return written, nil
+}
+
 func noteRequestWithIDs(spec source.Spec, files []string, patch, base, head string) provider.Request {
 	return provider.Request{
 		Base: base, Head: head, Directory: spec.Dir, Files: files,
@@ -466,22 +651,183 @@ func noteRequestWithIDs(spec source.Spec, files []string, patch, base, head stri
 	}
 }
 
-func stableNoteComparison(spec source.Spec) (patch, base, head string, err error) {
-	return stableComparison(spec.ComparisonIDs, spec.Diff)
+func stableNoteComparison(spec source.Spec, relative, side, expected string) (
+	patch, placementPatch, base, head string,
+	err error,
+) {
+	comparisonSpec := spec
+	comparisonSpec.Paths = nil
+	for range 3 {
+		comparison, resolveErr := resolveNoteComparison(comparisonSpec)
+		if resolveErr != nil {
+			return "", "", "", "", resolveErr
+		}
+		base, head = comparison.base, comparison.head
+		placementSpec := comparison.spec
+		placementSpec.Paths = spec.Paths
+		patch, placementPatch, err = notePatches(comparison.spec, placementSpec)
+		if err != nil {
+			return "", "", "", "", err
+		}
+		digest := ""
+		if expected != "" {
+			digest, err = noteFileDigest(comparison.spec, relative, side)
+			if err != nil {
+				return "", "", "", "", err
+			}
+		}
+		afterPatch, afterPlacementPatch, afterErr := notePatches(comparison.spec, placementSpec)
+		if afterErr != nil {
+			return "", "", "", "", afterErr
+		}
+		afterDigest := ""
+		if expected != "" {
+			afterDigest, err = noteFileDigest(comparison.spec, relative, side)
+			if err != nil {
+				return "", "", "", "", err
+			}
+		}
+		afterComparison, afterResolveErr := resolveNoteComparison(comparisonSpec)
+		if afterResolveErr != nil {
+			return "", "", "", "", afterResolveErr
+		}
+		if base == afterComparison.base && head == afterComparison.head &&
+			patch == afterPatch && placementPatch == afterPlacementPatch && digest == afterDigest {
+			if expected != "" && !strings.EqualFold(digest, expected) {
+				return "", "", "", "", errors.New("target file does not match the selected diff side")
+			}
+			return patch, placementPatch, base, head, nil
+		}
+	}
+	return "", "", "", "", errors.New("selected comparison changed while capturing the note")
 }
 
-func stableComparison(
-	readIDs func() (string, string),
-	readPatch func() (string, error),
+func notePatches(comparison, placement source.Spec) (patch, placementPatch string, err error) {
+	placementPatch, err = placement.Diff()
+	if err != nil {
+		return "", "", err
+	}
+	if noteTarget(comparison) != provider.NoteTargetCommits {
+		if slices.Equal(comparison.Paths, placement.Paths) {
+			return placementPatch, placementPatch, nil
+		}
+		patch, err = comparison.Diff()
+		return patch, placementPatch, err
+	}
+	patch, err = comparison.NoteDiff()
+	return patch, placementPatch, err
+}
+
+func noteFileDigest(spec source.Spec, relative, side string) (string, error) {
+	if err := validateExpectedNoteFileDomain(spec, relative, side); err != nil {
+		return "", err
+	}
+	content, err := noteComparisonFile(spec, relative, side)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(content)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+type resolvedNoteComparison struct {
+	spec source.Spec
+	base string
+	head string
+}
+
+func resolveNoteComparison(spec source.Spec) (resolvedNoteComparison, error) {
+	spec.NoLazyFetch = true
+	base, head := spec.ComparisonIDs()
+	resolved := spec
+	if spec.From == "" && spec.To == "" && !spec.Staged {
+		if base == "" {
+			return resolvedNoteComparison{}, errors.New("resolve working-tree comparison identity")
+		}
+		return resolvedNoteComparison{spec: resolved, base: base}, nil
+	}
+	if base == "" {
+		left := spec.From
+		if left == "" {
+			left = "HEAD"
+		}
+		return resolvedNoteComparison{}, fmt.Errorf("resolve comparison base %q", left)
+	}
+	resolved.From = base
+	if spec.To != "" {
+		if head == "" {
+			return resolvedNoteComparison{}, fmt.Errorf("resolve comparison head %q", spec.To)
+		}
+		resolved.To = head
+	}
+	return resolvedNoteComparison{spec: resolved, base: base, head: head}, nil
+}
+
+func stableExpectedComparison(
+	resolve func() (resolvedNoteComparison, error),
+	readPatch func(source.Spec) (string, error),
+	readDigest func(source.Spec) (string, error),
+	expected string,
 ) (patch, base, head string, err error) {
 	for range 3 {
-		base, head = readIDs()
-		patch, err = readPatch()
+		comparison, resolveErr := resolve()
+		if resolveErr != nil {
+			return "", "", "", resolveErr
+		}
+		base, head = comparison.base, comparison.head
+		patch, err = readPatch(comparison.spec)
 		if err != nil {
 			return "", "", "", err
 		}
-		afterBase, afterHead := readIDs()
-		if base == afterBase && head == afterHead {
+		digest, digestErr := readDigest(comparison.spec)
+		if digestErr != nil {
+			return "", "", "", digestErr
+		}
+		afterPatch, afterErr := readPatch(comparison.spec)
+		if afterErr != nil {
+			return "", "", "", afterErr
+		}
+		afterDigest, afterDigestErr := readDigest(comparison.spec)
+		if afterDigestErr != nil {
+			return "", "", "", afterDigestErr
+		}
+		afterComparison, afterResolveErr := resolve()
+		if afterResolveErr != nil {
+			return "", "", "", afterResolveErr
+		}
+		if base == afterComparison.base && head == afterComparison.head && patch == afterPatch && digest == afterDigest {
+			if !strings.EqualFold(digest, expected) {
+				return "", "", "", errors.New("target file does not match the selected diff side")
+			}
+			return patch, base, head, nil
+		}
+	}
+	return "", "", "", errors.New("selected comparison changed while capturing the note")
+}
+
+func stableComparison(
+	resolve func() (resolvedNoteComparison, error),
+	readPatch func(source.Spec) (string, error),
+) (patch, base, head string, err error) {
+	for range 3 {
+		comparison, resolveErr := resolve()
+		if resolveErr != nil {
+			return "", "", "", resolveErr
+		}
+		base, head = comparison.base, comparison.head
+		patch, err = readPatch(comparison.spec)
+		if err != nil {
+			return "", "", "", err
+		}
+		afterPatch, afterErr := readPatch(comparison.spec)
+		if afterErr != nil {
+			return "", "", "", afterErr
+		}
+		afterComparison, afterResolveErr := resolve()
+		if afterResolveErr != nil {
+			return "", "", "", afterResolveErr
+		}
+		if base == afterComparison.base && head == afterComparison.head && patch == afterPatch {
 			return patch, base, head, nil
 		}
 	}
@@ -489,36 +835,49 @@ func stableComparison(
 }
 
 type noteSnapshot struct {
-	patch string
-	files []string
-	base  string
-	head  string
+	patch          string
+	placementPatch string
+	files          []string
+	base           string
+	head           string
 }
 
 func stableNoteSnapshot(spec source.Spec) (noteSnapshot, error) {
 	comparison := spec
 	comparison.Paths = nil
 	for range 3 {
-		base, head := comparison.ComparisonIDs()
-		before, err := comparison.Diff()
+		resolved, err := resolveNoteComparison(comparison)
 		if err != nil {
 			return noteSnapshot{}, err
 		}
-		files, err := comparison.NoteFiles()
+		placement := resolved.spec
+		placement.Paths = spec.Paths
+		before, beforePlacement, err := notePatches(resolved.spec, placement)
 		if err != nil {
 			return noteSnapshot{}, err
 		}
-		after, err := comparison.Diff()
+		files, err := resolved.spec.NoteFiles()
 		if err != nil {
 			return noteSnapshot{}, err
 		}
-		afterFiles, err := comparison.NoteFiles()
+		after, afterPlacement, err := notePatches(resolved.spec, placement)
 		if err != nil {
 			return noteSnapshot{}, err
 		}
-		afterBase, afterHead := comparison.ComparisonIDs()
-		if base == afterBase && head == afterHead && before == after && slices.Equal(files, afterFiles) {
-			return noteSnapshot{patch: before, files: files, base: base, head: head}, nil
+		afterFiles, err := resolved.spec.NoteFiles()
+		if err != nil {
+			return noteSnapshot{}, err
+		}
+		afterResolved, err := resolveNoteComparison(comparison)
+		if err != nil {
+			return noteSnapshot{}, err
+		}
+		if resolved.base == afterResolved.base && resolved.head == afterResolved.head &&
+			before == after && beforePlacement == afterPlacement && slices.Equal(files, afterFiles) {
+			return noteSnapshot{
+				patch: before, placementPatch: beforePlacement,
+				files: files, base: resolved.base, head: resolved.head,
+			}, nil
 		}
 	}
 	return noteSnapshot{}, errors.New("selected comparison changed while reading notes")
@@ -545,6 +904,7 @@ func readNotes(
 	spec source.Spec,
 	files []string,
 	patch string,
+	placementPatch string,
 	base string,
 	head string,
 	providers []provider.LoadedManifest,
@@ -572,7 +932,7 @@ func readNotes(
 			if !allowed[filepath.ToSlash(filepath.Clean(path))] {
 				continue
 			}
-			if err := validateNoteVisibility(patch, &note); err != nil {
+			if err := validateNoteVisibility(placementPatch, &note); err != nil {
 				failures = append(failures, fmt.Errorf("provider %s: %w", configured.Manifest.Name, err))
 				failedSources[configured.Manifest.Name] = true
 				continue
@@ -598,14 +958,14 @@ func validateNoteVisibility(patch string, note *provider.Note) error {
 	}
 	if placement.StartLine > 0 && placement.StartSide != placement.Side {
 		if _, err := noteRangeInFilePatch(patch, placement.Path, placement.StartSide, 0, placement.StartLine); err != nil {
-			if degradeContextPlacement(placement) {
+			if degradeInvisiblePlacement(note) {
 				return nil
 			}
 			return fmt.Errorf("note %q has an invisible %s range start: %w", note.ID, placement.Quality, err)
 		}
 		context, err := noteRangeInFilePatch(patch, placement.Path, placement.Side, 0, placement.Line)
 		if err != nil {
-			if degradeContextPlacement(placement) {
+			if degradeInvisiblePlacement(note) {
 				return nil
 			}
 			return fmt.Errorf("note %q has an invisible %s range end: %w", note.ID, placement.Quality, err)
@@ -617,7 +977,7 @@ func validateNoteVisibility(patch string, note *provider.Note) error {
 	}
 	context, err := noteRangeInFilePatch(patch, placement.Path, placement.Side, placement.StartLine, placement.Line)
 	if err != nil {
-		if degradeContextPlacement(placement) {
+		if degradeInvisiblePlacement(note) {
 			return nil
 		}
 		return fmt.Errorf("note %q has an invisible %s placement: %w", note.ID, placement.Quality, err)
@@ -655,6 +1015,22 @@ func degradeContextPlacement(placement *provider.NotePlacement) bool {
 	return true
 }
 
+func degradeInvisiblePlacement(note *provider.Note) bool {
+	if degradeContextPlacement(&note.Placement) {
+		return true
+	}
+	if note.Placement.Quality != provider.PlacementExact ||
+		note.Anchor.Target != provider.NoteTargetCommits ||
+		note.Placement.Target != provider.NoteTargetCommits {
+		return false
+	}
+	note.Placement.StartSide = ""
+	note.Placement.StartLine = 0
+	note.Placement.Line = 0
+	note.Placement.Quality = provider.PlacementFile
+	return true
+}
+
 func selectNoteProviders(
 	configured []provider.LoadedManifest,
 	action string,
@@ -684,6 +1060,7 @@ func selectOneNoteProvider(
 	action string,
 	name string,
 	role string,
+	selectionFlag string,
 ) ([]provider.LoadedManifest, error) {
 	selected, err := selectNoteProviders(configured, action, name)
 	if err != nil {
@@ -697,7 +1074,7 @@ func selectOneNoteProvider(
 		for _, candidate := range selected {
 			names = append(names, candidate.Manifest.Name)
 		}
-		return nil, fmt.Errorf("multiple note %ss implement %s (%s); select one with --%s", role, action, strings.Join(names, ", "), map[string]string{"generator": "provider", "store": "store"}[role])
+		return nil, fmt.Errorf("multiple note %ss implement %s (%s); select one with --%s", role, action, strings.Join(names, ", "), selectionFlag)
 	}
 	return selected, nil
 }

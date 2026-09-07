@@ -300,6 +300,11 @@ function __changes_completion_context
         continue
       case 'note add:--config=*'
         continue
+      case 'note add:--expected-file-sha256'
+        set consume_value 1
+        continue
+      case 'note add:--expected-file-sha256=*'
+        continue
       case 'note add:--file'
         set consume_value 1
         continue
@@ -501,6 +506,7 @@ complete -c changes -f -n 'test (__changes_completion_context) = "note"' -a list
 complete -c changes -n 'test (__changes_completion_context) = "note add"' -l author -r -d 'Note author'
 complete -c changes -n 'test (__changes_completion_context) = "note add"' -f -l commit -r -a '(__changes_completion_values_12)' -d 'First-parent commit comparison'
 complete -c changes -n 'test (__changes_completion_context) = "note add"' -l config -r -d 'YAML configuration file'
+complete -c changes -n 'test (__changes_completion_context) = "note add"' -l expected-file-sha256 -r -d 'Require the selected file side to match this SHA-256 digest'
 complete -c changes -n 'test (__changes_completion_context) = "note add"' -f -l file -r -a '(__changes_completion_values_13)' -d 'Repository file to annotate'
 complete -c changes -n 'test (__changes_completion_context) = "note add"' -f -l from -r -a '(__changes_completion_values_14)' -d 'Left revision'
 complete -c changes -n 'test (__changes_completion_context) = "note add"' -l json -d 'Print the created note as JSON'

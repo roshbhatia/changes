@@ -1,0 +1,46 @@
+version: 2
+change: git-notes-neovim
+decision: approved
+note: Owner approved the proposal and instructed work to continue through the adversarial revisions on 2026-09-06.
+change_hash: 4e7505bc55ba14f5
+base_commit: 58a7461f5960a09bc3a4a1e66c714c943919d762
+items:
+    2ae96dac180b0028:
+        hash: cb515ac125b22fb6
+        text: Document and record the Neovim annotation flow. `writes:` `examples/neovim-notes/README.md`, `examples/neovim-notes/demo.tape`, `examples/neovim-notes/demo.gif`, `examples/neovim-notes/.demo.sha256`
+    8ce08f71a7a68e9d:
+        hash: 959609f81cb496da
+        text: Package the provider as an optional Nix output outside `full`. `writes:` `extras/git-notes/package.nix`, `flake.nix`
+    9b0596f479565b8f:
+        hash: 8ab6feef355b22ee
+        text: Add headless tests for input, ranges, argv, stdin, and failures. `writes:` `integrations/neovim/tests/contract.lua`
+    32fcac32be6a0af0:
+        hash: d7be1c96e36d28ff
+        text: Implement canonical committed-note storage under `refs/notes/changes`. `writes:` `extras/git-notes/main.go`, `extras/git-notes/provider.yaml`
+    146b607bf965b246:
+        hash: fb40ebc06ca58dd7
+        text: Expose the adapter as a separate Nix package and check. `writes:` `integrations/neovim/package.nix`, `flake.nix`
+    697b8e75307cfd3b:
+        hash: 44f55339752c045c
+        text: 'Adversarial review: audit ref isolation, atomicity, concurrency, corruption handling, and remote boundaries. `writes:` `openspec/changes/git-notes-neovim/review.md`'
+    812d22550d5acf1e:
+        hash: 8133b3c1f5e7738a
+        text: Document and record explicit Git notes synchronization. `writes:` `extras/README.md`, `examples/git-notes/README.md`, `examples/git-notes/demo.tape`, `examples/git-notes/demo.gif`, `examples/git-notes/.demo.sha256`
+    27946a0adbda8948:
+        hash: 87cd1aeaa4ad0300
+        text: Run deterministic tests, generated checks, demos, and the full flake check. `writes:` none
+    bcd9fd6ee6ab6606:
+        hash: 8779eb5559cc6352
+        text: 'Adversarial review: audit shell boundaries, range behavior, cancellation, errors, and editor policy. `writes:` `openspec/changes/git-notes-neovim/review.md`'
+    cc3100b0d9bceb82:
+        hash: 3403bfa71ec5c276
+        text: Add provider unit, repository, concurrency, corruption, and no-remote tests. `writes:` `extras/git-notes/main_test.go`
+    d31e4f510e7ed5e7:
+        hash: 3764f4e51b6ccacd
+        text: Run adversarial review, inspect the complete diff, and resolve accepted findings. `writes:` `openspec/changes/git-notes-neovim/design.md`, `openspec/changes/git-notes-neovim/tasks.md`
+    d95ff21ce3f4b028:
+        hash: da0fd32a043014d9
+        text: Implement the Lua command, functions, and `<Plug>` mappings. `writes:` `integrations/neovim/lua/changes/notes.lua`, `integrations/neovim/plugin/changes.lua`, `integrations/neovim/doc/changes.txt`
+    d135943e66a695a6:
+        hash: 2979ab2031f2b102
+        text: Integrate documentation and demo freshness checks. `writes:` `README.md`, `examples/harness-notes/README.md`, `hack/example-demos.sh`, `flake.nix`

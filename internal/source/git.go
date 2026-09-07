@@ -19,11 +19,12 @@ const MaxPatchBytes = 64 << 20
 // the working tree, one ref is that ref against the working tree, and two refs
 // compare the trees. Staged compares HEAD or one ref against the index.
 type Spec struct {
-	Dir    string
-	From   string
-	To     string
-	Staged bool
-	Paths  []string
+	Dir         string
+	From        string
+	To          string
+	Staged      bool
+	Paths       []string
+	NoLazyFetch bool
 }
 
 // ComparisonIDs resolves stable endpoint identities for a comparison. A
@@ -32,23 +33,21 @@ type Spec struct {
 // patch fingerprint identifies their current contents.
 func (s Spec) ComparisonIDs() (base, head string) {
 	if s.From == "" && s.To == "" && !s.Staged {
-		return indexIdentity(s.Dir), ""
+		return indexIdentity(s), ""
 	}
 	left := s.From
 	if left == "" {
 		left = "HEAD"
 	}
-	base, _ = objectID(s.Dir, left)
+	base, _ = s.objectID(left)
 	if s.To != "" {
-		head, _ = objectID(s.Dir, s.To)
+		head, _ = s.objectID(s.To)
 	}
 	return base, head
 }
 
-func indexIdentity(directory string) string {
-	command := exec.Command("git", "ls-files", "--stage", "-z")
-	command.Dir = directory
-	command.Env = git.CleanEnv()
+func indexIdentity(spec Spec) string {
+	command := spec.command("ls-files", "--stage", "-z")
 	digest := sha256.New()
 	command.Stdout = digest
 	if err := command.Run(); err != nil {
@@ -57,10 +56,10 @@ func indexIdentity(directory string) string {
 	return fmt.Sprintf("index:%x", digest.Sum(nil))
 }
 
-func objectID(dir, revision string) (string, error) {
+func (s Spec) objectID(revision string) (string, error) {
 	var last error
 	for _, kind := range []string{"commit", "tree"} {
-		value, err := git.Output(dir, "rev-parse", "--verify", revision+"^{"+kind+"}")
+		value, err := s.output("rev-parse", "--verify", revision+"^{"+kind+"}")
 		if err == nil {
 			return strings.TrimSpace(value), nil
 		}
@@ -76,6 +75,16 @@ func (s Spec) Diff() (string, error) {
 	return s.runDiff("never")
 }
 
+// NoteDiff returns the raw tree delta used to identify a committed comparison.
+func (s Spec) NoteDiff() (string, error) {
+	s.NoLazyFetch = true
+	args, err := s.noteIdentityArgs()
+	if err != nil {
+		return "", err
+	}
+	return s.runDiffArgs(args)
+}
+
 // Files returns repository-relative paths touched by the comparison. Reading
 // names separately preserves a deleted file's old path, which a unified +++
 // header reports as /dev/null.
@@ -85,9 +94,7 @@ func (s Spec) Files() ([]string, error) {
 		return nil, err
 	}
 	args = append([]string{args[0], "--name-only", "-z"}, args[1:]...)
-	command := exec.Command("git", args...)
-	command.Dir = s.Dir
-	command.Env = git.CleanEnv()
+	command := s.command(args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -108,14 +115,13 @@ func (s Spec) Files() ([]string, error) {
 // names because left-side notes use the source path and right-side notes use
 // the destination path.
 func (s Spec) NoteFiles() ([]string, error) {
-	args, err := s.args("never")
+	s.NoLazyFetch = true
+	args, err := s.noteArgs("never")
 	if err != nil {
 		return nil, err
 	}
 	args = append([]string{args[0], "--name-status", "-z"}, args[1:]...)
-	command := exec.Command("git", args...)
-	command.Dir = s.Dir
-	command.Env = git.CleanEnv()
+	command := s.command(args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -176,7 +182,71 @@ func (s Spec) args(color string) ([]string, error) {
 		return nil, errors.New("staged comparisons accept at most one revision")
 	}
 	args := []string{"diff", "--color=" + color, "--find-renames", "--src-prefix=a/", "--dst-prefix=b/"}
-	args = append(args, "--no-ext-diff")
+	args = append(args, "--no-ext-diff", "--no-textconv")
+	if s.Staged {
+		args = append(args, "--cached")
+	}
+	if s.From != "" {
+		args = append(args, s.From)
+	}
+	if s.To != "" {
+		args = append(args, s.To)
+	}
+	if len(s.Paths) > 0 {
+		args = append(args, "--")
+		args = append(args, s.Paths...)
+	}
+	return args, nil
+}
+
+func (s Spec) noteArgs(color string) ([]string, error) {
+	args, err := s.args(color)
+	if err != nil {
+		return nil, err
+	}
+	filtered := args[:1]
+	for _, argument := range args[1:] {
+		if argument != "--find-renames" {
+			filtered = append(filtered, argument)
+		}
+	}
+	args = filtered
+	canonical := []string{
+		"--unified=3",
+		"--inter-hunk-context=0",
+		"--diff-algorithm=myers",
+		"--no-indent-heuristic",
+		"--find-renames=50%",
+		"-l0",
+		"--no-relative",
+		"-O/dev/null",
+		"--full-index",
+		"--submodule=short",
+		"--ignore-submodules=none",
+	}
+	return append(append([]string{args[0]}, canonical...), args[1:]...), nil
+}
+
+func (s Spec) noteIdentityArgs() ([]string, error) {
+	if s.Staged && s.To != "" {
+		return nil, errors.New("staged comparisons accept at most one revision")
+	}
+	args := []string{
+		"diff",
+		"--raw",
+		"-z",
+		"--abbrev=64",
+		"--diff-algorithm=myers",
+		"--find-renames=50%",
+		"-l0",
+		"--no-relative",
+		"-O/dev/null",
+		"--submodule=short",
+		"--ignore-submodules=none",
+		"--color=never",
+		"--no-ext-diff",
+		"--no-textconv",
+	}
 	if s.Staged {
 		args = append(args, "--cached")
 	}
@@ -198,9 +268,11 @@ func (s Spec) runDiff(color string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	command := exec.Command("git", args...)
-	command.Dir = s.Dir
-	command.Env = git.CleanEnv()
+	return s.runDiffArgs(args)
+}
+
+func (s Spec) runDiffArgs(args []string) (string, error) {
+	command := s.command(args...)
 	stdout := limitedBuffer{limit: MaxPatchBytes}
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -210,6 +282,45 @@ func (s Spec) runDiff(color string) (string, error) {
 	}
 	if stdout.exceeded {
 		return "", fmt.Errorf("git patch exceeds %d bytes", MaxPatchBytes)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+func (s Spec) command(arguments ...string) *exec.Cmd {
+	if s.NoLazyFetch {
+		arguments = append([]string{
+			"-c", "core.fsmonitor=false",
+		}, arguments...)
+	}
+	command := exec.Command("git", arguments...)
+	command.Dir = s.Dir
+	command.Env = git.CleanEnv()
+	if s.NoLazyFetch {
+		environment := command.Env[:0]
+		for _, entry := range command.Env {
+			if strings.HasPrefix(entry, "GIT_NO_LAZY_FETCH=") ||
+				strings.HasPrefix(entry, "GIT_NO_REPLACE_OBJECTS=") ||
+				strings.HasPrefix(entry, "GIT_REPLACE_REF_BASE=") {
+				continue
+			}
+			environment = append(environment, entry)
+		}
+		command.Env = append(environment, "GIT_NO_LAZY_FETCH=1", "GIT_NO_REPLACE_OBJECTS=1")
+	}
+	return command
+}
+
+func (s Spec) output(arguments ...string) (string, error) {
+	command := s.command(arguments...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		verb := ""
+		if len(arguments) > 0 {
+			verb = arguments[0]
+		}
+		return "", fmt.Errorf("git %s failed in %s: %s: %w", verb, s.Dir, strings.TrimSpace(stderr.String()), err)
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }

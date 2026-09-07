@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -101,25 +102,582 @@ func TestStableComparisonRetriesMovingEndpoints(t *testing.T) {
 	identities := [][2]string{{"base-a", "head-a"}, {"base-b", "head-b"}, {"base-b", "head-b"}, {"base-b", "head-b"}}
 	reads := 0
 	patches := 0
-	patch, base, head, err := stableComparison(func() (string, string) {
+	patch, base, head, err := stableComparison(func() (resolvedNoteComparison, error) {
 		identity := identities[reads]
 		reads++
-		return identity[0], identity[1]
-	}, func() (string, error) {
+		return resolvedNoteComparison{
+			spec: source.Spec{From: identity[0], To: identity[1]},
+			base: identity[0], head: identity[1],
+		}, nil
+	}, func(source.Spec) (string, error) {
 		patches++
+		if patches > 2 {
+			return "patch-3", nil
+		}
 		return fmt.Sprintf("patch-%d", patches), nil
 	})
-	if err != nil || patch != "patch-2" || base != "base-b" || head != "head-b" {
+	if err != nil || patch != "patch-3" || base != "base-b" || head != "head-b" {
 		t.Fatalf("stable comparison = %q %q %q, %v", patch, base, head, err)
 	}
 
 	reads = 0
-	_, _, _, err = stableComparison(func() (string, string) {
+	_, _, _, err = stableComparison(func() (resolvedNoteComparison, error) {
 		reads++
-		return fmt.Sprintf("base-%d", reads), "head"
-	}, func() (string, error) { return "patch", nil })
+		base := fmt.Sprintf("base-%d", reads)
+		return resolvedNoteComparison{spec: source.Spec{From: base, To: "head"}, base: base, head: "head"}, nil
+	}, func(source.Spec) (string, error) { return "patch", nil })
 	if err == nil || !strings.Contains(err.Error(), "changed while capturing") {
 		t.Fatalf("moving comparison error = %v", err)
+	}
+}
+
+func TestStableExpectedComparisonRepeatsPatchAndDigestAsOneTuple(t *testing.T) {
+	patches := []string{"patch-b", "patch-a", "patch-a", "patch-a"}
+	patchRead := 0
+	digestRead := 0
+	patch, base, head, err := stableExpectedComparison(
+		func() (resolvedNoteComparison, error) {
+			return resolvedNoteComparison{
+				spec: source.Spec{From: "base", To: "head"},
+				base: "base", head: "head",
+			}, nil
+		},
+		func(source.Spec) (string, error) {
+			value := patches[patchRead]
+			patchRead++
+			return value, nil
+		},
+		func(source.Spec) (string, error) {
+			digestRead++
+			return "digest-a", nil
+		},
+		"digest-a",
+	)
+	if err != nil || patch != "patch-a" || base != "base" || head != "head" || patchRead != 4 || digestRead != 4 {
+		t.Fatalf("stable tuple = %q %q %q, patch reads=%d digest reads=%d, %v", patch, base, head, patchRead, digestRead, err)
+	}
+}
+
+func TestResolveNoteComparisonPinsRefsAndPreservesMutableSides(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "committed\n"})
+	commit, err := noteGitOutput(repository, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	committed, err := resolveNoteComparison(source.Spec{Dir: repository, From: "HEAD", To: "HEAD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.spec.From != commit || committed.spec.To != commit || committed.base != commit || committed.head != commit || !committed.spec.NoLazyFetch {
+		t.Fatalf("resolved commit comparison = %+v", committed)
+	}
+
+	if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte("index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("git", "add", "main.go")
+	command.Dir = repository
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, output)
+	}
+	staged, err := resolveNoteComparison(source.Spec{Dir: repository, Staged: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !staged.spec.Staged || staged.spec.From != commit || staged.spec.To != "" || staged.base != commit || staged.head != "" {
+		t.Fatalf("resolved staged comparison = %+v", staged)
+	}
+	content, err := noteComparisonFile(staged.spec, "main.go", provider.NoteSideRight)
+	if err != nil || string(content) != "index\n" {
+		t.Fatalf("resolved staged right side = %q, %v", content, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte("working\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	working, err := resolveNoteComparison(source.Spec{Dir: repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if working.spec.From != "" || working.spec.To != "" || working.spec.Staged || !strings.HasPrefix(working.base, "index:") || working.head != "" {
+		t.Fatalf("resolved working comparison = %+v", working)
+	}
+	content, err = noteComparisonFile(working.spec, "main.go", provider.NoteSideRight)
+	if err != nil || string(content) != "working\n" {
+		t.Fatalf("resolved working right side = %q, %v", content, err)
+	}
+}
+
+func TestNoteGitCommandIsolatesReplacementAndFSMonitorState(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "committed\n"})
+	if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte("working\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(t.TempDir(), "fsmonitor")
+	marker := filepath.Join(t.TempDir(), "fsmonitor-ran")
+	script := "#!/bin/sh\n: > \"${CHANGES_FSMONITOR_MARKER:?}\"\nprintf '%s\\0' \"$2\"\n"
+	if err := os.WriteFile(hook, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"config", "core.fsmonitor", hook}, {"config", "core.fsmonitorHookVersion", "2"}} {
+		command := exec.Command("git", arguments...)
+		command.Dir = repository
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	t.Setenv("CHANGES_FSMONITOR_MARKER", marker)
+	t.Setenv("GIT_NO_LAZY_FETCH", "0")
+	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
+	t.Setenv("GIT_REPLACE_REF_BASE", "refs/replace/custom/")
+	probe := exec.Command("git", "ls-files")
+	probe.Dir = repository
+	if output, err := probe.CombinedOutput(); err != nil {
+		t.Fatalf("fsmonitor probe: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("configured fsmonitor did not run: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+
+	command := noteGitCommand(repository, "ls-files")
+	values := map[string]string{}
+	for _, entry := range command.Env {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[name] = value
+		}
+	}
+	if values["GIT_NO_LAZY_FETCH"] != "1" || values["GIT_NO_REPLACE_OBJECTS"] != "1" {
+		t.Fatalf("note Git environment = %#v", values)
+	}
+	if _, ok := values["GIT_REPLACE_REF_BASE"]; ok {
+		t.Fatalf("note Git environment kept replacement ref base: %#v", values)
+	}
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("isolated ls-files: %v\n%s", err, output)
+	}
+	if _, err := noteGitOutput(repository, "rev-parse", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExpectedNoteFileDomain(source.Spec{Dir: repository}, "main.go", provider.NoteSideRight); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := noteComparisonFile(source.Spec{Dir: repository, From: "HEAD", To: "HEAD"}, "main.go", provider.NoteSideRight); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("note Git command ran configured fsmonitor: %v", err)
+	}
+}
+
+func TestStableExpectedComparisonFreezesResolvedEndpointsAcrossABA(t *testing.T) {
+	live := "A/B"
+	resolveCalls := 0
+	resolve := func() (resolvedNoteComparison, error) {
+		resolveCalls++
+		switch resolveCalls {
+		case 1:
+			if live != "A/B" {
+				t.Fatalf("initial refs = %s", live)
+			}
+			live = "C/D"
+		case 2:
+			if live != "C/D" {
+				t.Fatalf("moving refs = %s", live)
+			}
+			live = "A/B"
+		default:
+			t.Fatalf("unexpected resolution %d", resolveCalls)
+		}
+		return resolvedNoteComparison{
+			spec: source.Spec{From: "oid-a", To: "oid-b"},
+			base: "oid-a", head: "oid-b",
+		}, nil
+	}
+	readPatch := func(spec source.Spec) (string, error) {
+		if live != "C/D" || spec.From != "oid-a" || spec.To != "oid-b" {
+			t.Fatalf("patch read used live refs: live=%s spec=%+v", live, spec)
+		}
+		return "patch-a-b", nil
+	}
+	readDigest := func(spec source.Spec) (string, error) {
+		if live != "C/D" || spec.From != "oid-a" || spec.To != "oid-b" {
+			t.Fatalf("digest read used live refs: live=%s spec=%+v", live, spec)
+		}
+		return "digest-b", nil
+	}
+
+	patch, base, head, err := stableExpectedComparison(resolve, readPatch, readDigest, "digest-b")
+	if err != nil || patch != "patch-a-b" || base != "oid-a" || head != "oid-b" || live != "A/B" {
+		t.Fatalf("stable ABA tuple = %q %q %q, live=%s, %v", patch, base, head, live, err)
+	}
+}
+
+func TestNoteComparisonCaptureDoesNotLazyFetchPromisorObjects(t *testing.T) {
+	sourceRepository := t.TempDir()
+	prepareRepository(t, sourceRepository, map[string]string{"main.go": "old\n"})
+	for _, contents := range []string{"new\n", "new\n"} {
+		if err := os.WriteFile(filepath.Join(sourceRepository, "main.go"), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		arguments := []string{"commit", "--quiet", "--allow-empty", "-am", "fixture"}
+		command := exec.Command("git", arguments...)
+		command.Dir = sourceRepository
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	gitOutput := func(directory string, arguments ...string) string {
+		t.Helper()
+		command := exec.Command("git", arguments...)
+		command.Dir = directory
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	base := gitOutput(sourceRepository, "rev-parse", "HEAD~2")
+	changed := gitOutput(sourceRepository, "rev-parse", "HEAD~1")
+	head := gitOutput(sourceRepository, "rev-parse", "HEAD")
+	missingBlob := gitOutput(sourceRepository, "rev-parse", "HEAD:main.go")
+
+	bareRepository := filepath.Join(t.TempDir(), "origin.git")
+	gitOutput(t.TempDir(), "clone", "--quiet", "--bare", sourceRepository, bareRepository)
+	gitOutput(bareRepository, "config", "uploadpack.allowFilter", "true")
+
+	tests := []struct {
+		name    string
+		capture func(string) error
+	}{
+		{
+			name: "note list",
+			capture: func(repository string) error {
+				_, err := stableNoteSnapshot(source.Spec{Dir: repository, From: base, To: changed})
+				return err
+			},
+		},
+		{
+			name: "note add",
+			capture: func(repository string) error {
+				if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte("new\n"), 0o600); err != nil {
+					return err
+				}
+				expected := fmt.Sprintf("%x", sha256.Sum256([]byte("new\n")))
+				_, _, _, _, err := stableNoteComparison(
+					source.Spec{Dir: repository, From: changed, To: head},
+					"main.go", provider.NoteSideRight, expected,
+				)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := filepath.Join(t.TempDir(), "partial")
+			gitOutput(t.TempDir(), "-c", "protocol.file.allow=always", "clone", "--quiet", "--filter=blob:none", "--no-checkout", "file://"+bareRepository, repository)
+			if _, err := noteGitOutput(repository, "cat-file", "-e", missingBlob); err == nil {
+				t.Fatal("filtered clone contains the promised blob")
+			}
+
+			probe := filepath.Join(t.TempDir(), "remote-accessed")
+			helper := filepath.Join(t.TempDir(), "remote-helper")
+			script := fmt.Sprintf("#!/bin/sh\n: > %q\nexit 1\n", probe)
+			if err := os.WriteFile(helper, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			gitOutput(repository, "config", "protocol.ext.allow", "always")
+			gitOutput(repository, "remote", "set-url", "origin", "ext::"+helper)
+
+			if err := test.capture(repository); err == nil {
+				t.Fatal("comparison unexpectedly succeeded with a missing promised object")
+			}
+			if _, err := os.Stat(probe); !os.IsNotExist(err) {
+				t.Fatalf("comparison accessed the promisor remote: %v", err)
+			}
+			if _, err := noteGitOutput(repository, "cat-file", "-e", missingBlob); err == nil {
+				t.Fatal("comparison fetched the promised blob")
+			}
+		})
+	}
+}
+
+func TestExpectedNoteFileMatchesSelectedComparisonSide(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "base\n"})
+	path := filepath.Join(repository, "main.go")
+	if err := os.WriteFile(path, []byte("index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("git", "add", "main.go")
+	command.Dir = repository
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, output)
+	}
+	if err := os.WriteFile(path, []byte("working\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	digest := func(value string) string {
+		return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+	}
+	tests := []struct {
+		name string
+		spec source.Spec
+		side string
+		want string
+	}{
+		{name: "working right", spec: source.Spec{Dir: repository}, side: provider.NoteSideRight, want: "working\n"},
+		{name: "working left", spec: source.Spec{Dir: repository}, side: provider.NoteSideLeft, want: "index\n"},
+		{name: "staged right", spec: source.Spec{Dir: repository, Staged: true}, side: provider.NoteSideRight, want: "index\n"},
+		{name: "staged left", spec: source.Spec{Dir: repository, Staged: true}, side: provider.NoteSideLeft, want: "base\n"},
+		{name: "commit right", spec: source.Spec{Dir: repository, From: "HEAD", To: "HEAD"}, side: provider.NoteSideRight, want: "base\n"},
+		{name: "commit left", spec: source.Spec{Dir: repository, From: "HEAD", To: "HEAD"}, side: provider.NoteSideLeft, want: "base\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			content, err := noteComparisonFile(test.spec, "main.go", test.side)
+			if err != nil || string(content) != test.want {
+				t.Fatalf("selected content = %q, %v; want %q", content, err, test.want)
+			}
+			if err := validateExpectedNoteFile(test.spec, "main.go", test.side, digest(test.want)); err != nil {
+				t.Fatalf("matching digest: %v", err)
+			}
+			if err := validateExpectedNoteFile(test.spec, "main.go", test.side, digest("other\n")); err == nil {
+				t.Fatal("mismatched digest was accepted")
+			}
+		})
+	}
+}
+
+func TestExpectedNoteFileRejectsUnsupportedWorkingByteDomains(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "base\n"})
+	expected := fmt.Sprintf("%x", sha256.Sum256([]byte("base\n")))
+	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("main.go filter=review\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := source.Spec{Dir: repository}
+	if err := validateExpectedNoteFile(spec, "main.go", provider.NoteSideRight, expected); err == nil || !strings.Contains(err.Error(), "unsupported Git filter conversion") {
+		t.Fatalf("clean-filter error = %v", err)
+	}
+
+	link := filepath.Join(repository, "link.go")
+	if err := os.Symlink("main.go", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExpectedNoteFile(spec, "link.go", provider.NoteSideRight, expected); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink error = %v", err)
+	}
+}
+
+func TestNoteAddRejectsInvalidExpectedFileDigest(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestMainHelperProcess", "--",
+		"note", "add", "--file", "main.go", "--message", "context", "--expected-file-sha256", "bad")
+	command.Dir = t.TempDir()
+	command.Env = append(os.Environ(), "GO_WANT_MAIN_HELPER=1")
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "must be a 64-character SHA-256 digest") {
+		t.Fatalf("error = %v, output = %s", err, output)
+	}
+}
+
+func TestNoteAddVerifiesCommitAndStagedSidesBeforeProviderCreation(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "base\n"})
+	path := filepath.Join(repository, "main.go")
+	if err := os.WriteFile(path, []byte("committed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"add", "main.go"}, {"commit", "--quiet", "-m", "committed"}} {
+		command := exec.Command("git", arguments...)
+		command.Dir = repository
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+
+	providers := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "request.json")
+	manifest := fmt.Sprintf(`version: provider/v1
+name: fake
+description: fake note provider
+command: [%q, %q, %q, %q]
+actions:
+  changes.notes.create:
+    description: create notes
+`, os.Args[0], "-test.run=TestFakeNoteProviderProcess", "--", capture)
+	if err := os.WriteFile(filepath.Join(providers, "fake.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "changes.yaml")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("providers:\n  directory: %q\n", providers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := func(value string) string {
+		return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+	}
+	run := func(arguments ...string) (string, error) {
+		command := noteCLICommand(t, repository, arguments...)
+		output, err := command.CombinedOutput()
+		return string(output), err
+	}
+	baseArgs := []string{"note", "add", "--config", config, "--provider", "fake", "--file", "main.go", "--line", "1", "--message", "context"}
+
+	output, err := run(append(baseArgs, "--commit", "HEAD", "--expected-file-sha256", digest("other\n"))...)
+	if err == nil || !strings.Contains(output, "does not match the selected diff side") {
+		t.Fatalf("commit mismatch = %v\n%s", err, output)
+	}
+	if _, statErr := os.Stat(capture); !os.IsNotExist(statErr) {
+		t.Fatalf("provider ran for commit mismatch: %v", statErr)
+	}
+	if output, err = run(append(baseArgs, "--commit", "HEAD", "--expected-file-sha256", digest("committed\n"))...); err != nil {
+		t.Fatalf("matching commit side: %v\n%s", err, output)
+	}
+	if err := os.Remove(capture); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(path, []byte("index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("git", "add", "main.go")
+	command.Dir = repository
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, output)
+	}
+	if err := os.WriteFile(path, []byte("working\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err = run(append(baseArgs, "--staged", "--expected-file-sha256", digest("working\n"))...)
+	if err == nil || !strings.Contains(output, "does not match the selected diff side") {
+		t.Fatalf("staged mismatch = %v\n%s", err, output)
+	}
+	if _, statErr := os.Stat(capture); !os.IsNotExist(statErr) {
+		t.Fatalf("provider ran for staged mismatch: %v", statErr)
+	}
+	if output, err = run(append(baseArgs, "--staged", "--expected-file-sha256", digest("index\n"))...); err != nil {
+		t.Fatalf("matching staged side: %v\n%s", err, output)
+	}
+}
+
+func TestNoteAddUsesExactIndexPathsWithStageLikePrefixes(t *testing.T) {
+	repository := t.TempDir()
+	files := map[string]string{"main.go": "distractor\n"}
+	for _, prefix := range []string{"0", "1", "2", "3"} {
+		files[prefix+":main.go"] = "old\n"
+	}
+	prepareRepository(t, repository, files)
+
+	want := map[string]string{}
+	for _, prefix := range []string{"0", "1", "2", "3"} {
+		name := prefix + ":main.go"
+		want[name] = "selected-" + prefix + "\n"
+		if err := os.WriteFile(filepath.Join(repository, name), []byte(want[name]), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command("git", "add", "--", name)
+		command.Dir = repository
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git add %s: %v\n%s", name, err, output)
+		}
+	}
+
+	providers := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "request.json")
+	manifest := fmt.Sprintf(`version: provider/v1
+name: fake
+description: fake note provider
+command: [%q, %q, %q, %q]
+actions:
+  changes.notes.create:
+    description: create notes
+`, os.Args[0], "-test.run=TestFakeNoteProviderProcess", "--", capture)
+	if err := os.WriteFile(filepath.Join(providers, "fake.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "changes.yaml")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("providers:\n  directory: %q\n", providers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := func(value string) string {
+		return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+	}
+	distractorDigest := digest(files["main.go"])
+
+	for _, prefix := range []string{"0", "1", "2", "3"} {
+		name := prefix + ":main.go"
+		baseArgs := []string{
+			"note", "add", "--config", config, "--provider", "fake", "--staged",
+			"--file", name, "--line", "1", "--message", "context",
+		}
+		output, err := noteCLICommand(t, repository, append(baseArgs, "--expected-file-sha256", distractorDigest)...).CombinedOutput()
+		if err == nil || !strings.Contains(string(output), "does not match the selected diff side") {
+			t.Fatalf("%s accepted another index path: %v\n%s", name, err, output)
+		}
+		if _, statErr := os.Stat(capture); !os.IsNotExist(statErr) {
+			t.Fatalf("provider ran for mismatched %s: %v", name, statErr)
+		}
+
+		output, err = noteCLICommand(t, repository, append(baseArgs, "--expected-file-sha256", digest(want[name]))...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("matching %s: %v\n%s", name, err, output)
+		}
+		payload, err := os.ReadFile(capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var request provider.Request
+		if err := json.Unmarshal(payload, &request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Note == nil || request.Note.Anchor.Path != name || request.Note.Anchor.Context != strings.TrimSuffix(want[name], "\n") {
+			t.Fatalf("%s note anchor = %+v", name, request.Note)
+		}
+		if err := os.Remove(capture); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestNoteProviderSelectionErrorsNameTheCommandFlag(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "old\n"})
+	if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	providers := t.TempDir()
+	manifests := map[string]string{
+		"generator.yaml": "version: provider/v1\nname: generator\ndescription: test\ncommand: [\"true\"]\nactions:\n  changes.notes.generate:\n    description: test\n",
+		"writer-a.yaml":  "version: provider/v1\nname: writer-a\ndescription: test\ncommand: [\"true\"]\nactions:\n  changes.notes.create:\n    description: test\n",
+		"writer-b.yaml":  "version: provider/v1\nname: writer-b\ndescription: test\ncommand: [\"true\"]\nactions:\n  changes.notes.create:\n    description: test\n",
+	}
+	for name, manifest := range manifests {
+		if err := os.WriteFile(filepath.Join(providers, name), []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := filepath.Join(t.TempDir(), "changes.yaml")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("providers:\n  directory: %q\n", providers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := noteCLICommand(t, repository, "note", "add", "--config", config,
+		"--file", "main.go", "--line", "1", "--message", "context").CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "select one with --provider") || strings.Contains(string(output), "select one with --store") {
+		t.Fatalf("note add selection error = %v\n%s", err, output)
+	}
+
+	output, err = noteCLICommand(t, repository, "note", "generate", "--config", config,
+		"--provider", "generator").CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "select one with --store") {
+		t.Fatalf("note generate selection error = %v\n%s", err, output)
 	}
 }
 
@@ -291,6 +849,71 @@ func TestValidateNoteVisibilityDegradesInvisibleContextToFile(t *testing.T) {
 	}
 }
 
+func TestCommittedExactNoteHiddenByDiffContextRendersAtFileLevel(t *testing.T) {
+	repository := t.TempDir()
+	lines := make([]string, 20)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("line %02d", index+1)
+	}
+	prepareRepository(t, repository, map[string]string{"main.go": strings.Join(lines, "\n") + "\n"})
+	base, err := noteGitOutput(repository, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines[19] = "changed line 20"
+	if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"add", "main.go"}, {"commit", "--quiet", "-m", "head"}} {
+		if _, err := noteGitOutput(repository, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head, err := noteGitOutput(repository, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	providers := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "request.json")
+	manifest := fmt.Sprintf(`version: provider/v1
+name: fake
+description: fake note provider
+command: [%q, %q, %q, %q]
+actions:
+  changes.notes:
+    description: read notes
+`, os.Args[0], "-test.run=TestFakeNoteProviderProcess", "--", capture)
+	if err := os.WriteFile(filepath.Join(providers, "fake.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "changes.yaml")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("providers:\n  directory: %q\n", providers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		context string
+		want    string
+	}{
+		{context: "1", want: "● file"},
+		{context: "30", want: "● line 2@right"},
+	} {
+		t.Run("context-"+test.context, func(t *testing.T) {
+			if _, err := noteGitOutput(repository, "config", "diff.context", test.context); err != nil {
+				t.Fatal(err)
+			}
+			out := runNoteCLI(
+				t, repository, "--config", config, "--color", "never", "--no-symbols", "--no-calls",
+				base, head,
+			)
+			if !strings.Contains(out, test.want) || !strings.Contains(out, "Remember this context") {
+				t.Fatalf("render with diff.context=%s =\n%s", test.context, out)
+			}
+		})
+	}
+}
+
 func TestValidateNoteVisibilityDegradesMismatchedContextToFile(t *testing.T) {
 	patch := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+visible-a\n"
 	note := provider.Note{
@@ -405,6 +1028,64 @@ actions:
 	}
 }
 
+func TestFilteredRenderUsesFullNoteIdentityAndFilteredPlacement(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "one\nold main\n", "other.go": "one\nold other\n"})
+	for name, content := range map[string]string{"main.go": "one\nnew main\n", "other.go": "one\nnew other\n"} {
+		if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	filtered := source.Spec{Dir: repository, Paths: []string{filepath.Join(repository, "main.go")}}
+	snapshot, err := stableNoteSnapshot(filtered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.files) != 2 || !strings.Contains(snapshot.patch, "other.go") {
+		t.Fatalf("full note comparison = files %#v, patch %q", snapshot.files, snapshot.patch)
+	}
+	if !strings.Contains(snapshot.placementPatch, "main.go") || strings.Contains(snapshot.placementPatch, "other.go") {
+		t.Fatalf("filtered placement patch = %q", snapshot.placementPatch)
+	}
+
+	providers := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "request.json")
+	manifest := fmt.Sprintf(`version: provider/v1
+name: fake
+description: fake note provider
+command: [%q, %q, %q, %q]
+actions:
+  changes.notes:
+    description: read notes
+`, os.Args[0], "-test.run=TestFakeNoteProviderProcess", "--", capture)
+	if err := os.WriteFile(filepath.Join(providers, "fake.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "changes.yaml")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("providers:\n  directory: %q\n", providers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := runNoteCLI(
+		t, repository,
+		"--config", config, "--color", "never", "--no-symbols", "--no-calls", "--", "main.go",
+	)
+	if !strings.Contains(out, "Remember this context") || !strings.Contains(out, "main.go") || strings.Contains(out, "other.go") {
+		t.Fatalf("filtered render = %s", out)
+	}
+	payload, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request provider.Request
+	if err := json.Unmarshal(payload, &request); err != nil {
+		t.Fatal(err)
+	}
+	wantFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(snapshot.patch)))
+	if len(request.Files) != 1 || request.Files[0] != "main.go" || request.Fingerprint != wantFingerprint {
+		t.Fatalf("filtered note request = %+v", request)
+	}
+}
+
 func TestNoteProviderCompletionUsesConfigAndAction(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "config folder")
 	providers := filepath.Join(root, "providers")
@@ -471,7 +1152,7 @@ func TestFakeNoteProviderProcess(t *testing.T) {
 		State: provider.NoteStateOpen,
 		Anchor: provider.NoteAnchor{
 			Path: "main.go", Side: provider.NoteSideRight, Line: 2,
-			Base: request.Base, Head: request.Head, Target: provider.NoteTargetWorking,
+			Base: request.Base, Head: request.Head, Target: requestNoteTarget(request),
 		},
 		Placement: provider.NotePlacement{
 			Path: "main.go", Side: provider.NoteSideRight, Line: 2,
@@ -554,6 +1235,16 @@ func requestNoteTarget(request provider.Request) string {
 
 func runNoteCLI(t *testing.T, directory string, arguments ...string) string {
 	t.Helper()
+	command := noteCLICommand(t, directory, arguments...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("changes %v: %v\n%s", arguments, err, output)
+	}
+	return string(output)
+}
+
+func noteCLICommand(t *testing.T, directory string, arguments ...string) *exec.Cmd {
+	t.Helper()
 	command := exec.Command(os.Args[0], append([]string{"-test.run=TestMainHelperProcess", "--"}, arguments...)...)
 	command.Dir = directory
 	command.Env = append(os.Environ(),
@@ -562,9 +1253,5 @@ func runNoteCLI(t *testing.T, directory string, arguments ...string) string {
 		"XDG_DATA_HOME="+t.TempDir(),
 		"XDG_DATA_DIRS="+t.TempDir(),
 	)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("changes %v: %v\n%s", arguments, err, output)
-	}
-	return string(output)
+	return command
 }

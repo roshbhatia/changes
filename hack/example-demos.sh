@@ -7,9 +7,11 @@ example_names=(
   agent-review-notes
   custom-difftool
   github-pr-notes
+  git-notes
   harness-notes
   logical-change-groups
   manual-notes
+  neovim-notes
   provider-validation
   workspace-review
 )
@@ -26,10 +28,11 @@ demo_fingerprint() {
     case "$example" in
     agent-review-notes) printf '%s\n' hack/demo-codex.sh ;;
     github-pr-notes) printf '%s\n' hack/demo-gh.sh ;;
+    neovim-notes) find integrations/neovim -type f -name '*.lua' -print | LC_ALL=C sort ;;
     esac
     find "examples/${example}" -maxdepth 1 -type f \
       ! -name '.demo.sha256' -print | LC_ALL=C sort
-    find cmd internal extras -type f \
+    find cmd internal extras integrations -type f \
       \( -name '*.go' -o -name 'package.nix' -o -name 'provider.yaml' -o -name 'package.json' -o -name 'package-lock.json' \) \
       ! -name '*_test.go' -print | LC_ALL=C sort
   } | while IFS= read -r path; do
@@ -87,6 +90,8 @@ if [[ $selected != all ]]; then
 fi
 
 full_path=$(nix build "$repo_dir#full" --no-link --print-out-paths)
+git_notes_path=$(nix build "$repo_dir#provider-git-notes" --no-link --print-out-paths)
+neovim_plugin_path=$(nix build "$repo_dir#neovim-plugin" --no-link --print-out-paths)
 demo_root=$(mktemp -d)
 trap 'rm -rf "${demo_root:?}"' EXIT
 
@@ -205,10 +210,26 @@ render_demo() {
     base_sha=$(git -C "$repository" rev-parse HEAD^)
     head_sha=$(git -C "$repository" rev-parse HEAD)
     ;;
+  git-notes)
+    git -C "$repository" add main.go
+    git -C "$repository" commit -qm normalize
+    git init -q --bare "$environment_root/origin.git"
+    git -C "$repository" remote add origin "$environment_root/origin.git"
+    git -C "$repository" push -q -u origin HEAD
+    git clone -q "$environment_root/origin.git" "$environment_root/reviewer"
+    base_sha=$(git -C "$repository" rev-parse HEAD^)
+    head_sha=$(git -C "$repository" rev-parse HEAD)
+    extra_path="$git_notes_path/bin:$extra_path"
+    ;;
   logical-change-groups)
     mkdir -p "$environment_root/config/changes/providers/demo-groups"
     cp "$repo_dir/examples/logical-change-groups/provider" "$environment_root/config/changes/providers/demo-groups/provider"
     cp "$repo_dir/examples/logical-change-groups/provider.yaml" "$environment_root/config/changes/providers/demo-groups/provider.yaml"
+    ;;
+  neovim-notes)
+    mkdir -p "$environment_root/config/nvim"
+    printf '%s\n' 'vim.opt.runtimepath:prepend(vim.env.DEMO_NEOVIM_PLUGIN)' \
+      >"$environment_root/config/nvim/init.lua"
     ;;
   esac
 
@@ -233,8 +254,13 @@ render_demo() {
     export XDG_CACHE_HOME="$environment_root/cache"
     export XDG_CONFIG_HOME="$environment_root/config"
     export XDG_DATA_HOME="$environment_root/data"
-    export XDG_DATA_DIRS="$environment_root/data-dirs"
+    if [[ $example == git-notes ]]; then
+      export XDG_DATA_DIRS="$git_notes_path/share:$environment_root/data-dirs"
+    else
+      export XDG_DATA_DIRS="$environment_root/data-dirs"
+    fi
     export XDG_STATE_HOME="$environment_root/state"
+    export DEMO_NEOVIM_PLUGIN="$neovim_plugin_path"
     unset CHANGES_CONFIG CHANGES_PROVIDERS_DIRECTORY
     if [[ $example == custom-difftool ]]; then
       unset CHANGES_DIFF_ENGINE CHANGES_DIFF_LAYOUT

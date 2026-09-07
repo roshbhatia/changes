@@ -61,6 +61,7 @@ export extern "changes note add" [
   --author: string # Note author
   --commit: string@"__changes_completion_values_12" # First-parent commit comparison
   --config: string # YAML configuration file
+  --expected-file-sha256: string # Require the selected file side to match this SHA-256 digest
   --file: string@"__changes_completion_values_13" # Repository file to annotate
   --from: string@"__changes_completion_values_14" # Left revision
   --json # Print the created note as JSON

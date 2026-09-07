@@ -4,12 +4,13 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   verify-tag:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - name: Match the tag to flake.nix
@@ -18,9 +19,33 @@ jobs:
           test -n "$package_version"
           test "$GITHUB_REF_NAME" = "v$package_version"
 
+  gate:
+    name: Check (${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Verify runner architecture
+        run: test "$(nix eval --impure --raw --expr builtins.currentSystem)" = "${{ matrix.system }}"
+      - run: nix flake check --print-build-logs
+
   release:
-    needs: verify-tag
+    needs: [verify-tag, gate]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:

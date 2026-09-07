@@ -25,16 +25,28 @@ nix profile install github:roshbhatia/changes#provider-calldiff
 nix profile install github:roshbhatia/changes#provider-codex-review
 nix profile install github:roshbhatia/changes#provider-local-notes
 nix profile install github:roshbhatia/changes#provider-github-pr
+nix profile install github:roshbhatia/changes#provider-git-notes
 ```
 
 Each provider package exposes only its `changes-provider-*` adapter and
 manifest. Its runtime tools stay private to the adapter, so these packages do
 not replace profile commands such as `git` or `gh`.
 
-Install core and every reference provider as one self-contained package:
+Install core and the reference providers that are safe to compose as one
+self-contained package:
 
 ```bash
 nix profile install github:roshbhatia/changes#full
+```
+
+`full` excludes `git-notes` because both it and `local-notes` can write notes.
+Install `provider-git-notes` separately and select it explicitly for committed
+writes.
+
+The flake also exports `neovim-plugin` for Nix-managed Neovim configurations:
+
+```nix
+programs.neovim.plugins = [ inputs.changes.packages.${pkgs.system}.neovim-plugin ];
 ```
 
 Install a release and its shell completions with Homebrew:
@@ -70,7 +82,9 @@ workflows. Note workflows cover
 [`manual notes`](examples/manual-notes/README.md). Provider authors can use
 [`examples/provider-validation`](examples/provider-validation/README.md).
 [`Logical change groups`](examples/logical-change-groups/README.md) order
-related hunks by request flow instead of file name.
+related hunks by request flow instead of file name. See
+[`Git notes storage`](examples/git-notes/README.md) for explicit ref sharing and
+[`Neovim notes`](examples/neovim-notes/README.md) for popup annotations.
 
 ## Configure it
 
@@ -256,6 +270,7 @@ Create a note on the selected diff
 | `--author` `<value>` | Note author |
 | `--commit` `<value>` | First-parent commit comparison |
 | `--config` `<value>` | YAML configuration file |
+| `--expected-file-sha256` `<value>` | Require the selected file side to match this SHA-256 digest |
 | `--file` `<value>` | Repository file to annotate |
 | `--from` `<value>` | Left revision |
 | `--json` | Print the created note as JSON |

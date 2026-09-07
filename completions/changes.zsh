@@ -239,6 +239,8 @@ _changes() {
       'note add:--commit='*) continue ;;
       'note add:--config') consume_value=1; continue ;;
       'note add:--config='*) continue ;;
+      'note add:--expected-file-sha256') consume_value=1; continue ;;
+      'note add:--expected-file-sha256='*) continue ;;
       'note add:--file') consume_value=1; continue ;;
       'note add:--file='*) continue ;;
       'note add:--from') consume_value=1; continue ;;
@@ -372,6 +374,7 @@ _changes() {
         '--author[Note author]:value:' \
         '--commit[First-parent commit comparison]:value:__changes_completion_values_12' \
         '--config[YAML configuration file]:value:' \
+        '--expected-file-sha256[Require the selected file side to match this SHA-256 digest]:value:' \
         '--file[Repository file to annotate]:value:__changes_completion_values_13' \
         '--from[Left revision]:value:__changes_completion_values_14' \
         '--json[Print the created note as JSON]' \

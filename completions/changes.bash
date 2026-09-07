@@ -187,6 +187,8 @@ _changes_complete() {
       'note add:--commit='*) continue ;;
       'note add:--config') consume_value=1; continue ;;
       'note add:--config='*) continue ;;
+      'note add:--expected-file-sha256') consume_value=1; continue ;;
+      'note add:--expected-file-sha256='*) continue ;;
       'note add:--file') consume_value=1; continue ;;
       'note add:--file='*) continue ;;
       'note add:--from') consume_value=1; continue ;;
@@ -343,7 +345,7 @@ _changes_complete() {
       ;;
     'note add')
       __changes_completion_filter "$current" < <(
-        printf '%s\n' '--author' '--commit' '--config' '--file' '--from' '--json' '--line' '--message' '--message-file' '--origin' '--provider' '--session' '--side' '--staged' '--start-line' '--to'
+        printf '%s\n' '--author' '--commit' '--config' '--expected-file-sha256' '--file' '--from' '--json' '--line' '--message' '--message-file' '--origin' '--provider' '--session' '--side' '--staged' '--start-line' '--to'
       )
       ;;
     'note generate')

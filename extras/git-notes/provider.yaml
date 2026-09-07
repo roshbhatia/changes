@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=../../schema/provider.schema.json
+version: provider/v1
+name: git-notes
+description: Read and write committed diff notes in refs/notes/changes
+command: [changes-provider-git-notes]
+actions:
+  changes.notes:
+    description: Read committed notes from the Changes Git notes ref
+  changes.notes.create:
+    description: Create a committed note in the Changes Git notes ref
+requires:
+  commands: [git]
+defaults:
+  timeout: 5s
+  priority: 70

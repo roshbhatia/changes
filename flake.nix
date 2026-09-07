@@ -42,7 +42,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          version = "0.8.0";
+          version = "0.9.0";
           mkPackage =
             {
               name,
@@ -112,6 +112,7 @@
             {
               name,
               runtimeInputs ? [ ],
+              includeInFull ? true,
             }:
             let
               adapter = mkPackage {
@@ -128,6 +129,7 @@
               paths = [ adapter ];
               passthru = {
                 inherit adapter;
+                inherit includeInFull;
                 providerRuntimeInputs = runtimeInputs;
               };
               meta = adapter.meta;
@@ -141,10 +143,16 @@
               value = import (./extras + "/${name}/package.nix") { inherit mkProvider pkgs; };
             }) providerNames
           );
+          aggregateProviderNames = builtins.filter (name: providers.${name}.includeInFull) providerNames;
           extras = pkgs.symlinkJoin {
             name = "changes-providers-${version}";
-            paths = builtins.attrValues providers;
-            passthru.providers = providers;
+            paths = map (name: providers.${name}) aggregateProviderNames;
+            passthru.providers = builtins.listToAttrs (
+              map (name: {
+                inherit name;
+                value = providers.${name};
+              }) aggregateProviderNames
+            );
           };
           full = pkgs.symlinkJoin {
             name = "changes-full-${version}";
@@ -162,9 +170,11 @@
               mainProgram = "changes";
             };
           };
+          neovimPlugin = import ./integrations/neovim/package.nix { inherit pkgs version; };
         in
         {
           inherit changes extras full;
+          neovim-plugin = neovimPlugin;
           default = changes;
         }
         // builtins.listToAttrs (
@@ -190,6 +200,12 @@
           providerNames = builtins.filter (name: builtins.pathExists (./extras + "/${name}/package.nix")) (
             builtins.attrNames (builtins.readDir ./extras)
           );
+          aggregateProviderNames = builtins.filter (
+            name: packages."provider-${name}".includeInFull
+          ) providerNames;
+          excludedProviderNames = builtins.filter (
+            name: !packages."provider-${name}".includeInFull
+          ) providerNames;
           providerChecks = builtins.listToAttrs (
             map (name: {
               name = "provider-${name}";
@@ -220,7 +236,11 @@
             ${pkgs.lib.concatMapStringsSep "\n" (name: ''
               test -x ${packages.extras}/bin/changes-provider-${name}
               test -f ${packages.extras}/share/changes/providers/${name}/provider.yaml
-            '') providerNames}
+            '') aggregateProviderNames}
+            ${pkgs.lib.concatMapStringsSep "\n" (name: ''
+              test ! -e ${packages.extras}/bin/changes-provider-${name}
+              test ! -e ${packages.extras}/share/changes/providers/${name}/provider.yaml
+            '') excludedProviderNames}
             touch "$out"
           '';
           providerAggregateValidation = pkgs.runCommand "changes-provider-aggregate-validation" { } ''
@@ -278,6 +298,12 @@
                 ! grep -F -- 'diff --git' output
                 touch "$out"
               '';
+          neovimNoteAdapter =
+            pkgs.runCommand "changes-neovim-note-adapter" { nativeBuildInputs = [ pkgs.neovim ]; }
+              ''
+                nvim --headless -u NONE -l ${./integrations/neovim/tests/contract.lua} ${./integrations/neovim}
+                touch "$out"
+              '';
           coreRuntimePaths = map toString packages.default.runtimeInputs;
           providerExclusiveRuntimeInputs = builtins.filter (
             runtime: !(builtins.elem (toString runtime) coreRuntimePaths)
@@ -286,6 +312,7 @@
         {
           default = packages.default;
           dash-prefixed-paths = dashPrefixedPaths;
+          neovim-note-adapter = neovimNoteAdapter;
           provider-aggregate-boundary = providerAggregateBoundary;
           provider-aggregate-validation = providerAggregateValidation;
           provider-profile-composition = pkgs.runCommand "changes-provider-profile-composition-check" { } ''
@@ -377,7 +404,7 @@
                   XDG_DATA_DIRS="$XDG_DATA_DIRS" \
                   PATH="${pkgs.coreutils}/bin" \
                   ${pkgs.lib.getExe packages.full} provider list --json)"
-                test "$(printf '%s' "$full" | jq 'length')" -eq ${toString (builtins.length providerNames)}
+                test "$(printf '%s' "$full" | jq 'length')" -eq ${toString (builtins.length aggregateProviderNames)}
                 ${pkgs.coreutils}/bin/env -i \
                   HOME="$HOME" \
                   XDG_CACHE_HOME="$XDG_CACHE_HOME" \
@@ -468,6 +495,7 @@
               pkgs.shfmt
               pkgs.git
               pkgs.gnutar
+              pkgs.neovim
               pkgs.fish
               pkgs.ffmpeg
               pkgs.charm-freeze

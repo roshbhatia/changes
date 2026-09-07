@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-06
+goal: Persist committed diff notes in refs/notes/changes without remote side
+  effects, and expose a shell-free Neovim popup workflow over the stable CLI.
