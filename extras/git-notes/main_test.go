@@ -766,7 +766,11 @@ func TestProviderGitCommandsDoNotRunRepositoryHooks(t *testing.T) {
 	hooks := filepath.Join(repository, ".git", "hooks")
 	marker := filepath.Join(t.TempDir(), "reference-transaction-ran")
 	hook := filepath.Join(hooks, "reference-transaction")
-	content := []byte("#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$1\" >> \"${CHANGES_HOOK_MARKER:?}\"\n")
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("#!" + bash + "\nset -euo pipefail\nprintf '%s\\n' \"$1\" >> \"${CHANGES_HOOK_MARKER:?}\"\n")
 	if err := os.WriteFile(hook, content, 0o700); err != nil {
 		t.Fatal(err)
 	}
