@@ -434,6 +434,7 @@ func normalizeThread(request provider.Request, pull pullView, comparisonBase str
 			Summary: summary, Rationale: rationale, Author: author,
 			Origin: provider.NoteOriginExternal, Authority: provider.NoteAuthorityExternal,
 			State: state, CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt, URL: comment.URL,
+			Provenance: provider.NoteProvenance{Kind: "pull-request-review", Tool: "github", SessionID: "pull/" + strconv.Itoa(pull.Number), WorkingDirectory: request.Directory, URL: comment.URL},
 			Anchor: provider.NoteAnchor{
 				Path: thread.Path, Side: side, StartSide: anchorStartSide,
 				StartLine: anchorStart, Line: anchorLine,
@@ -455,6 +456,7 @@ func validationNote() provider.Note {
 		ThreadID: providerName + ":thread", Summary: "Review the ready change",
 		Author: "provider-validation", Origin: provider.NoteOriginExternal,
 		Authority: provider.NoteAuthorityExternal, State: provider.NoteStateOpen,
+		Provenance: provider.NoteProvenance{Kind: "pull-request-review", Tool: "github", SessionID: "pull/validation"},
 		Anchor: provider.NoteAnchor{
 			Path: "main.ts", Side: provider.NoteSideRight, Line: 2,
 			Target: provider.NoteTargetWorking,

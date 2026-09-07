@@ -166,10 +166,17 @@ func runNoteGenerate(args []string) {
 	}
 	drafts := make([]provider.NoteDraft, 0, len(response.Notes))
 	for _, generated := range response.Notes {
+		provenance := generated.Provenance
+		if provenance.SessionID == "" {
+			provenance.SessionID = *session
+		}
+		if provenance.WorkingDirectory == "" {
+			provenance.WorkingDirectory = spec.Dir
+		}
 		drafts = append(drafts, provider.NoteDraft{
 			Key:     generated.ID,
 			Summary: generated.Summary, Rationale: generated.Rationale, Author: generated.Author,
-			Origin: provider.NoteOriginAgent, Session: *session, Anchor: generated.Anchor,
+			Origin: provider.NoteOriginAgent, Session: *session, Provenance: provenance, Anchor: generated.Anchor,
 		})
 	}
 	created := []provider.Note{}
@@ -302,8 +309,13 @@ func runNoteAdd(args []string) {
 		fail(fmt.Errorf("%s: %w", relative, err))
 	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(comparisonPatch)))
+	provenanceKind := "manual"
+	if *origin == provider.NoteOriginAgent {
+		provenanceKind = "harness"
+	}
 	draft := &provider.NoteDraft{
 		Summary: summary, Rationale: rationale, Author: *author, Origin: *origin, Session: *session,
+		Provenance: provider.NoteProvenance{Kind: provenanceKind, Tool: "changes", SessionID: *session, WorkingDirectory: cwd},
 		Anchor: provider.NoteAnchor{
 			Path: relative, Side: resolvedSide, StartSide: rangeStartSide(resolvedSide, *startLine),
 			StartLine: *startLine, Line: *line,

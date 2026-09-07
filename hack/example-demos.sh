@@ -9,6 +9,7 @@ example_names=(
   github-pr-notes
   git-notes
   harness-notes
+  interactive-workspace
   logical-change-groups
   manual-notes
   neovim-notes

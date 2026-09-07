@@ -10,10 +10,21 @@ import (
 
 // Config is loaded from YAML, then overridden by CHANGES_* environment values.
 type Config struct {
-	Color     string    `json:"color,omitempty" yaml:"color" jsonschema:"enum=auto,enum=always,enum=never"`
-	Diff      Diff      `json:"diff,omitempty" yaml:"diff"`
-	Notes     Notes     `json:"notes,omitempty" yaml:"notes"`
-	Providers Providers `json:"providers,omitempty" yaml:"providers"`
+	Color       string      `json:"color,omitempty" yaml:"color" jsonschema:"enum=auto,enum=always,enum=never"`
+	Diff        Diff        `json:"diff,omitempty" yaml:"diff"`
+	Interactive Interactive `json:"interactive,omitempty" yaml:"interactive"`
+	Notes       Notes       `json:"notes,omitempty" yaml:"notes"`
+	Providers   Providers   `json:"providers,omitempty" yaml:"providers"`
+}
+
+type Interactive struct {
+	CacheMaxEntries int                  `json:"cacheMaxEntries,omitempty" yaml:"cacheMaxEntries,omitempty" jsonschema:"minimum=0"`
+	CacheTTL        providerlib.Duration `json:"cacheTtl,omitempty" yaml:"cacheTtl,omitempty"`
+	Dock            string               `json:"dock,omitempty" yaml:"dock" jsonschema:"enum=left,enum=bottom"`
+	HistoryLimit    int                  `json:"historyLimit,omitempty" yaml:"historyLimit,omitempty" jsonschema:"minimum=1"`
+	Navigator       string               `json:"navigator,omitempty" yaml:"navigator" jsonschema:"enum=tree,enum=list"`
+	NoteInput       string               `json:"noteInput,omitempty" yaml:"noteInput" jsonschema:"enum=popup,enum=editor"`
+	Progress        bool                 `json:"progress" yaml:"progress"`
 }
 
 // Notes configures interactive note authoring. The command receives the draft
@@ -48,6 +59,15 @@ func Default() Config {
 		Diff: Diff{
 			Engine: "builtin",
 			Layout: "unified",
+		},
+		Interactive: Interactive{
+			CacheMaxEntries: 64,
+			CacheTTL:        providerlib.Duration(24 * time.Hour),
+			Dock:            "left",
+			HistoryLimit:    50,
+			Navigator:       "tree",
+			NoteInput:       "popup",
+			Progress:        true,
 		},
 		Notes: Notes{
 			GeneratorTimeout: providerlib.Duration(5 * time.Minute),

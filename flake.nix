@@ -42,7 +42,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          version = "0.9.1";
+          version = "0.10.0";
           mkPackage =
             {
               name,
@@ -57,7 +57,7 @@
               pname = name;
               inherit version;
               src = ./.;
-              vendorHash = "sha256-QrWulqo8m84BxwdDgGr31JyyfRkHsHZeLXCbbvnZKnU=";
+              vendorHash = "sha256-CxlwbpLQ4g4iZKGaZHn0PGaa+r818GOQUwBGIiR1+y0=";
               subPackages = [ subPackage ];
               nativeBuildInputs = [ pkgs.makeWrapper ] ++ pkgs.lib.optional completions pkgs.installShellFiles;
               nativeCheckInputs = [ pkgs.git ];
@@ -420,7 +420,7 @@
               {
                 nativeBuildInputs = [
                   pkgs.coreutils
-                  pkgs.ffmpeg
+                  pkgs.ffmpeg.bin
                   pkgs.findutils
                 ];
               }

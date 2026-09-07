@@ -38,6 +38,50 @@
       "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
       "description": "Go duration such as 500ms, 10s, or 2m"
     },
+    "Interactive": {
+      "properties": {
+        "cacheMaxEntries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheTtl": {
+          "$ref": "#/$defs/Duration"
+        },
+        "dock": {
+          "type": "string",
+          "enum": [
+            "left",
+            "bottom"
+          ]
+        },
+        "historyLimit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "navigator": {
+          "type": "string",
+          "enum": [
+            "tree",
+            "list"
+          ]
+        },
+        "noteInput": {
+          "type": "string",
+          "enum": [
+            "popup",
+            "editor"
+          ]
+        },
+        "progress": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "progress"
+      ]
+    },
     "Notes": {
       "properties": {
         "editor": {
@@ -90,6 +134,9 @@
     },
     "diff": {
       "$ref": "#/$defs/Diff"
+    },
+    "interactive": {
+      "$ref": "#/$defs/Interactive"
     },
     "notes": {
       "$ref": "#/$defs/Notes"

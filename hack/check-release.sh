@@ -38,6 +38,7 @@ completions/changes.zsh
 schema/changes.schema.json
 schema/provider.cue
 schema/provider.schema.json
+schema/workspace.schema.json
 EOF
 
 archives=("$source_dir"/dist/*.tar.gz)

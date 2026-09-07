@@ -12,6 +12,20 @@ vim.api.nvim_create_user_command("ChangesNote", function(arguments)
   require("changes.notes").prompt(options)
 end, { desc = "Add a Changes diff note", range = true })
 
+vim.api.nvim_create_user_command("ChangesWorkspace", function(arguments)
+  require("changes.workspace").open({ refresh = arguments.bang })
+end, { bang = true, desc = "Open the Changes workspace" })
+
+vim.api.nvim_create_user_command("ChangesWorkspaceDecorate", function(arguments)
+  require("changes.workspace").read({ refresh = arguments.bang }, function(err, snapshot)
+    if err ~= nil then
+      vim.notify(err, vim.log.levels.ERROR)
+      return
+    end
+    require("changes.workspace").decorate(0, snapshot)
+  end)
+end, { bang = true, desc = "Decorate the current buffer with Changes notes" })
+
 vim.keymap.set("n", "<Plug>(changes-note)", function()
   require("changes.notes").prompt()
 end, { desc = "Add a Changes diff note" })

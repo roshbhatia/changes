@@ -49,15 +49,16 @@ var blockedGitEnvironment = map[string]bool{
 }
 
 type storedNote struct {
-	Version   int                 `json:"version"`
-	ID        string              `json:"id"`
-	Key       string              `json:"key,omitempty"`
-	Summary   string              `json:"summary"`
-	Rationale string              `json:"rationale,omitempty"`
-	Author    string              `json:"author"`
-	Origin    string              `json:"origin"`
-	Session   string              `json:"session,omitempty"`
-	Anchor    provider.NoteAnchor `json:"anchor"`
+	Version    int                     `json:"version"`
+	ID         string                  `json:"id"`
+	Key        string                  `json:"key,omitempty"`
+	Summary    string                  `json:"summary"`
+	Rationale  string                  `json:"rationale,omitempty"`
+	Author     string                  `json:"author"`
+	Origin     string                  `json:"origin"`
+	Session    string                  `json:"session,omitempty"`
+	Provenance provider.NoteProvenance `json:"provenance,omitempty"`
+	Anchor     provider.NoteAnchor     `json:"anchor"`
 }
 
 type gitRunner interface {
@@ -397,7 +398,7 @@ func newStoredNote(draft provider.NoteDraft) (storedNote, error) {
 		Version: 1, ID: id, Key: draft.Key,
 		Summary: strings.TrimSpace(cleanOneLine(draft.Summary)), Rationale: cleanText(draft.Rationale),
 		Author: strings.TrimSpace(cleanOneLine(draft.Author)), Origin: draft.Origin,
-		Session: cleanOneLine(draft.Session), Anchor: draft.Anchor,
+		Session: cleanOneLine(draft.Session), Provenance: draft.Provenance, Anchor: draft.Anchor,
 	}, nil
 }
 
@@ -821,7 +822,8 @@ func comparisonNoteKey(anchor provider.NoteAnchor, key string) string {
 func sameDraft(record storedNote, draft provider.NoteDraft) bool {
 	return record.Key == draft.Key && record.Summary == strings.TrimSpace(cleanOneLine(draft.Summary)) &&
 		record.Rationale == cleanText(draft.Rationale) && record.Author == strings.TrimSpace(cleanOneLine(draft.Author)) &&
-		record.Origin == draft.Origin && record.Session == cleanOneLine(draft.Session) && record.Anchor == draft.Anchor
+		record.Origin == draft.Origin && record.Session == cleanOneLine(draft.Session) &&
+		record.Provenance == draft.Provenance && record.Anchor == draft.Anchor
 }
 
 func normalize(record storedNote, request provider.Request) provider.Note {
@@ -833,7 +835,7 @@ func normalize(record storedNote, request provider.Request) provider.Note {
 		ID: record.ID, Source: providerName, SourceID: record.ID,
 		Summary: record.Summary, Rationale: record.Rationale, Author: record.Author,
 		Origin: record.Origin, Authority: authority, State: provider.NoteStateOpen,
-		Session: record.Session, Anchor: record.Anchor,
+		Session: record.Session, Provenance: record.Provenance, Anchor: record.Anchor,
 		Placement: provider.NotePlacement{
 			Path: record.Anchor.Path, Side: record.Anchor.Side, StartSide: record.Anchor.StartSide,
 			StartLine: record.Anchor.StartLine, Line: record.Anchor.Line,
@@ -878,7 +880,7 @@ func validationCreateResponse(request provider.Request) (provider.Response, erro
 		record := storedNote{
 			Version: 1, ID: fmt.Sprintf("validation-%d", index+1), Summary: draft.Summary,
 			Rationale: draft.Rationale, Author: draft.Author, Origin: draft.Origin,
-			Session: draft.Session, Anchor: draft.Anchor,
+			Session: draft.Session, Provenance: draft.Provenance, Anchor: draft.Anchor,
 		}
 		note := normalize(record, request)
 		note.Placement.Target = draft.Anchor.Target

@@ -24,6 +24,7 @@ func TestCreateListAndReanchorNote(t *testing.T) {
 	request.Note = &provider.NoteDraft{
 		Summary: "Keep this invariant", Rationale: "The caller depends on it.",
 		Author: "agent", Origin: provider.NoteOriginAgent, Session: "session-1",
+		Provenance: provider.NoteProvenance{Kind: "harness", Tool: "codex", SessionID: "session-1", WorkingDirectory: repository},
 		Anchor: provider.NoteAnchor{
 			Path: "main.go", Side: provider.NoteSideRight, StartSide: provider.NoteSideRight,
 			StartLine: 1, Line: 2, Base: "base",
@@ -53,7 +54,9 @@ func TestCreateListAndReanchorNote(t *testing.T) {
 	}
 	note := listed.Notes[0]
 	if note.Anchor.StartLine != 1 || note.Anchor.Line != 2 || note.Placement.StartSide != "" ||
-		note.Placement.StartLine != 0 || note.Placement.Line != 3 || note.Placement.Quality != provider.PlacementContext {
+		note.Placement.StartLine != 0 || note.Placement.Line != 3 || note.Placement.Quality != provider.PlacementContext ||
+		note.Provenance.Kind != "harness" || note.Provenance.Tool != "codex" || note.Provenance.SessionID != "session-1" ||
+		note.Provenance.WorkingDirectory != repository {
 		t.Fatalf("reanchored note = %+v", note)
 	}
 

@@ -80,20 +80,21 @@ func (doc document) MarshalJSON() ([]byte, error) {
 }
 
 type storedNote struct {
-	ID         string               `json:"id"`
-	Key        string               `json:"key,omitempty"`
-	File       string               `json:"file"`
-	Line       int                  `json:"line"`
-	Summary    string               `json:"summary"`
-	Rationale  *string              `json:"rationale"`
-	Author     string               `json:"author"`
-	Origin     string               `json:"origin"`
-	Anchor     string               `json:"anchor,omitempty"`
-	State      string               `json:"state,omitempty"`
-	ReplyTo    string               `json:"reply_to,omitempty"`
-	Session    string               `json:"session,omitempty"`
-	CreatedAt  string               `json:"created_at,omitempty"`
-	Comparison *provider.NoteAnchor `json:"comparison,omitempty"`
+	ID         string                  `json:"id"`
+	Key        string                  `json:"key,omitempty"`
+	File       string                  `json:"file"`
+	Line       int                     `json:"line"`
+	Summary    string                  `json:"summary"`
+	Rationale  *string                 `json:"rationale"`
+	Author     string                  `json:"author"`
+	Origin     string                  `json:"origin"`
+	Anchor     string                  `json:"anchor,omitempty"`
+	State      string                  `json:"state,omitempty"`
+	ReplyTo    string                  `json:"reply_to,omitempty"`
+	Session    string                  `json:"session,omitempty"`
+	CreatedAt  string                  `json:"created_at,omitempty"`
+	Provenance provider.NoteProvenance `json:"provenance,omitempty"`
+	Comparison *provider.NoteAnchor    `json:"comparison,omitempty"`
 }
 
 func main() {
@@ -269,7 +270,7 @@ func prepareStoredNote(request provider.Request, draft provider.NoteDraft, now s
 		Summary: strings.TrimSpace(cleanOneLine(draft.Summary)),
 		Author:  strings.TrimSpace(cleanOneLine(draft.Author)), Origin: draft.Origin,
 		Anchor: cleanOneLine(draft.Anchor.Context), Session: cleanOneLine(draft.Session),
-		CreatedAt: now, Comparison: &comparison,
+		CreatedAt: now, Provenance: draft.Provenance, Comparison: &comparison,
 	}
 	if stored.Summary == "" || stored.Author == "" {
 		return storedNote{}, nil, provider.Note{}, errors.New("summary and author must remain non-empty after removing control bytes")
@@ -302,6 +303,7 @@ func sameDraft(stored storedNote, draft provider.NoteDraft) bool {
 	return stored.Key == draft.Key && stored.Summary == strings.TrimSpace(cleanOneLine(draft.Summary)) &&
 		rationale == cleanText(draft.Rationale) && stored.Author == strings.TrimSpace(cleanOneLine(draft.Author)) &&
 		stored.Origin == draft.Origin && stored.Session == cleanOneLine(draft.Session) &&
+		stored.Provenance == draft.Provenance &&
 		stored.Comparison != nil && *stored.Comparison == draft.Anchor
 }
 
@@ -411,7 +413,7 @@ func normalize(request provider.Request, stored storedNote, allowed map[string]b
 		ID: providerName + ":" + stored.ID, Source: providerName, SourceID: stored.ID,
 		ReplyTo: stored.ReplyTo, Summary: cleanOneLine(stored.Summary), Rationale: cleanText(rationale),
 		Author: cleanOneLine(stored.Author), Origin: stored.Origin, Authority: authority,
-		State: state, Session: cleanOneLine(stored.Session), CreatedAt: stored.CreatedAt,
+		State: state, Session: cleanOneLine(stored.Session), CreatedAt: stored.CreatedAt, Provenance: stored.Provenance,
 		Anchor: anchor, Placement: placement,
 	}, true, nil
 }

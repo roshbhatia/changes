@@ -28,7 +28,8 @@ func TestGenerateNormalizesStructuredReview(t *testing.T) {
 	}
 	note := response.Notes[0]
 	if note.Summary != "Keep the invariant" || note.Anchor.Path != "main.go" ||
-		note.Anchor.Side != provider.NoteSideRight || note.Placement.Quality != provider.PlacementExact {
+		note.Anchor.Side != provider.NoteSideRight || note.Placement.Quality != provider.PlacementExact ||
+		note.Provenance.Kind != "post-hoc-review" || note.Provenance.Tool != "codex" || note.Provenance.WorkingDirectory != request.Directory {
 		t.Fatalf("note = %+v", note)
 	}
 	retried, err := generate(context.Background(), request, func(context.Context, string, string, []byte) ([]byte, error) {

@@ -190,6 +190,21 @@ func TestValidateNoteDraftRestrictsWritableOrigins(t *testing.T) {
 	}
 }
 
+func TestValidateNoteProvenanceBoundsControlText(t *testing.T) {
+	draft := &NoteDraft{
+		Summary: "summary", Author: "agent", Origin: NoteOriginAgent,
+		Provenance: NoteProvenance{Kind: "generated", Tool: "codex", SessionID: "session-1", WorkingDirectory: "/work/repo"},
+		Anchor:     NoteAnchor{Path: "main.go", Side: NoteSideRight, Line: 1, Target: NoteTargetWorking},
+	}
+	if err := validateNoteDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	draft.Provenance.Tool = "bad\nname"
+	if err := validateNoteDraft(draft); err == nil {
+		t.Fatal("control-bearing provenance was accepted")
+	}
+}
+
 func TestQualifyNoteIDsPreservesNativeSourceIDs(t *testing.T) {
 	response := Response{Notes: []Note{{
 		ID: "comment", SourceID: "comment", ThreadID: "thread", ReplyTo: "parent",

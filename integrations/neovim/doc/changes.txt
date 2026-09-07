@@ -25,6 +25,16 @@ COMMANDS                                     *changes-notes-commands*
 :[range]ChangesNote
         Prompt for a note on the current line or given line range.
 
+                                                        *:ChangesWorkspace*
+:ChangesWorkspace[!]
+        Open the cohesive Changes diff from `changes workspace`. The bang
+        bypasses cached provider results.
+
+                                                *:ChangesWorkspaceDecorate*
+:ChangesWorkspaceDecorate[!]
+        Read structured line identities and place note-author extmarks in the
+        current buffer. The bang forces a refresh.
+
 ==============================================================================
 LUA API                                             *changes-notes-api*
 
@@ -42,6 +52,14 @@ require("changes.notes").add({opts}, {callback})
         Create a note without prompting. `message` is required. Optional
         `buf`, `start_line`, and `line` fields select the location. The
         callback receives `(error, note)`.
+
+require("changes.workspace").read({opts}, {callback})
+        Read `changes.workspace/v1` through |vim.system()| without a shell.
+        Supported fields are `command`, `view`, `layout`, `commit`, `config`,
+        `refresh`, and `buf`. The callback receives `(error, snapshot)`.
+
+require("changes.workspace").decorate({buf}, {snapshot})
+        Place note extmarks from structured hunk line identities.
 
 ==============================================================================
 MAPPINGS                                             *changes-notes-maps*

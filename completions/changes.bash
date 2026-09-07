@@ -11,65 +11,65 @@ __changes_completion_values_3() {
   printf '%s\n' 'unified' 'side-by-side'
 }
 __changes_completion_values_4() {
-  printf '%s\n' 'completion' 'difftool' 'render' 'generate' 'note' 'provider'
+  printf '%s\n' 'completion' 'interactive' 'workspace' 'difftool' 'render' 'generate' 'note' 'provider'
   'changes' '__values' 'repository' 2>/dev/null || true
 }
 __changes_completion_values_5() {
-  'changes' '__values' 'paths' 2>/dev/null || true
+  'changes' '__values' 'repository' 2>/dev/null || true
 }
 __changes_completion_values_6() {
-  printf '%s\n' 'auto' 'always' 'never'
+  printf '%s\n' 'unified' 'side-by-side'
 }
 __changes_completion_values_7() {
-  printf '%s\n' 'builtin' 'difftool'
+  printf '%s\n' 'working' 'staged' 'commit'
 }
 __changes_completion_values_8() {
-  printf '%s\n' 'unified' 'side-by-side'
+  'changes' '__values' 'repository' 2>/dev/null || true
 }
 __changes_completion_values_9() {
-  printf '%s\n' 'auto' 'always' 'never'
-}
-__changes_completion_values_10() {
-  printf '%s\n' 'builtin' 'filter'
-}
-__changes_completion_values_11() {
   printf '%s\n' 'unified' 'side-by-side'
 }
-__changes_completion_values_12() {
-  'changes' '__values' 'repository' 2>/dev/null || true
+__changes_completion_values_10() {
+  printf '%s\n' 'working' 'staged' 'commit'
 }
-__changes_completion_values_13() {
+__changes_completion_values_11() {
   'changes' '__values' 'paths' 2>/dev/null || true
 }
+__changes_completion_values_12() {
+  printf '%s\n' 'auto' 'always' 'never'
+}
+__changes_completion_values_13() {
+  printf '%s\n' 'builtin' 'difftool'
+}
 __changes_completion_values_14() {
-  'changes' '__values' 'repository' 2>/dev/null || true
+  printf '%s\n' 'unified' 'side-by-side'
 }
 __changes_completion_values_15() {
-  printf '%s\n' 'agent' 'user'
+  printf '%s\n' 'auto' 'always' 'never'
 }
 __changes_completion_values_16() {
-  'changes' '__values' 'note-writers' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
+  printf '%s\n' 'builtin' 'filter'
 }
 __changes_completion_values_17() {
-  printf '%s\n' 'left' 'right'
+  printf '%s\n' 'unified' 'side-by-side'
 }
 __changes_completion_values_18() {
   'changes' '__values' 'repository' 2>/dev/null || true
 }
 __changes_completion_values_19() {
-  'changes' '__values' 'repository' 2>/dev/null || true
+  'changes' '__values' 'paths' 2>/dev/null || true
 }
 __changes_completion_values_20() {
   'changes' '__values' 'repository' 2>/dev/null || true
 }
 __changes_completion_values_21() {
-  'changes' '__values' 'note-generators' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
+  printf '%s\n' 'agent' 'user'
 }
 __changes_completion_values_22() {
   'changes' '__values' 'note-writers' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
 }
 __changes_completion_values_23() {
-  'changes' '__values' 'repository' 2>/dev/null || true
+  printf '%s\n' 'left' 'right'
 }
 __changes_completion_values_24() {
   'changes' '__values' 'repository' 2>/dev/null || true
@@ -78,15 +78,33 @@ __changes_completion_values_25() {
   'changes' '__values' 'repository' 2>/dev/null || true
 }
 __changes_completion_values_26() {
-  'changes' '__values' 'note-readers' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
-}
-__changes_completion_values_27() {
   'changes' '__values' 'repository' 2>/dev/null || true
 }
+__changes_completion_values_27() {
+  'changes' '__values' 'note-generators' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
+}
 __changes_completion_values_28() {
-  'changes' '__values' 'providers' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
+  'changes' '__values' 'note-writers' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
 }
 __changes_completion_values_29() {
+  'changes' '__values' 'repository' 2>/dev/null || true
+}
+__changes_completion_values_30() {
+  'changes' '__values' 'repository' 2>/dev/null || true
+}
+__changes_completion_values_31() {
+  'changes' '__values' 'repository' 2>/dev/null || true
+}
+__changes_completion_values_32() {
+  'changes' '__values' 'note-readers' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
+}
+__changes_completion_values_33() {
+  'changes' '__values' 'repository' 2>/dev/null || true
+}
+__changes_completion_values_34() {
+  'changes' '__values' 'providers' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
+}
+__changes_completion_values_35() {
   'changes' '__values' 'providers' "${COMP_LINE:0:COMP_POINT}" 2>/dev/null || true
 }
 __changes_completion_filter() {
@@ -157,6 +175,32 @@ _changes_complete() {
       ':--since='*) continue ;;
       ':--width') consume_value=1; continue ;;
       ':--width='*) continue ;;
+      'interactive:--commit') consume_value=1; continue ;;
+      'interactive:--commit='*) continue ;;
+      'interactive:--config') consume_value=1; continue ;;
+      'interactive:--config='*) continue ;;
+      'interactive:--history-limit') consume_value=1; continue ;;
+      'interactive:--history-limit='*) continue ;;
+      'interactive:--layout') consume_value=1; continue ;;
+      'interactive:--layout='*) continue ;;
+      'interactive:--view') consume_value=1; continue ;;
+      'interactive:--view='*) continue ;;
+      'interactive:--width') consume_value=1; continue ;;
+      'interactive:--width='*) continue ;;
+      'workspace:--commit') consume_value=1; continue ;;
+      'workspace:--commit='*) continue ;;
+      'workspace:--config') consume_value=1; continue ;;
+      'workspace:--config='*) continue ;;
+      'workspace:--history-limit') consume_value=1; continue ;;
+      'workspace:--history-limit='*) continue ;;
+      'workspace:--layout') consume_value=1; continue ;;
+      'workspace:--layout='*) continue ;;
+      'workspace:--view') consume_value=1; continue ;;
+      'workspace:--view='*) continue ;;
+      'workspace:--width') consume_value=1; continue ;;
+      'workspace:--width='*) continue ;;
+      'workspace:--interval') consume_value=1; continue ;;
+      'workspace:--interval='*) continue ;;
       'difftool:--color') consume_value=1; continue ;;
       'difftool:--color='*) continue ;;
       'difftool:--config') consume_value=1; continue ;;
@@ -242,6 +286,8 @@ _changes_complete() {
     esac
     case "$context:$word" in
       ':completion') context='completion' ;;
+      ':interactive') context='interactive' ;;
+      ':workspace') context='workspace' ;;
       ':difftool') context='difftool' ;;
       ':render') context='render' ;;
       ':generate') context='generate' ;;
@@ -259,61 +305,73 @@ _changes_complete() {
     ':--engine') __changes_completion_filter "$current" < <(__changes_completion_values_1); return ;;
     ':--group-provider') __changes_completion_filter "$current" < <(__changes_completion_values_2); return ;;
     ':--layout') __changes_completion_filter "$current" < <(__changes_completion_values_3); return ;;
-    'difftool:--color') __changes_completion_filter "$current" < <(__changes_completion_values_6); return ;;
-    'difftool:--engine') __changes_completion_filter "$current" < <(__changes_completion_values_7); return ;;
-    'difftool:--layout') __changes_completion_filter "$current" < <(__changes_completion_values_8); return ;;
-    'render:--color') __changes_completion_filter "$current" < <(__changes_completion_values_9); return ;;
-    'render:--engine') __changes_completion_filter "$current" < <(__changes_completion_values_10); return ;;
-    'render:--layout') __changes_completion_filter "$current" < <(__changes_completion_values_11); return ;;
-    'note add:--commit') __changes_completion_filter "$current" < <(__changes_completion_values_12); return ;;
-    'note add:--file') __changes_completion_filter "$current" < <(__changes_completion_values_13); return ;;
-    'note add:--from') __changes_completion_filter "$current" < <(__changes_completion_values_14); return ;;
-    'note add:--origin') __changes_completion_filter "$current" < <(__changes_completion_values_15); return ;;
-    'note add:--provider') __changes_completion_filter "$current" < <(__changes_completion_values_16); return ;;
-    'note add:--side') __changes_completion_filter "$current" < <(__changes_completion_values_17); return ;;
-    'note add:--to') __changes_completion_filter "$current" < <(__changes_completion_values_18); return ;;
-    'note generate:--commit') __changes_completion_filter "$current" < <(__changes_completion_values_19); return ;;
-    'note generate:--from') __changes_completion_filter "$current" < <(__changes_completion_values_20); return ;;
-    'note generate:--provider') __changes_completion_filter "$current" < <(__changes_completion_values_21); return ;;
-    'note generate:--store') __changes_completion_filter "$current" < <(__changes_completion_values_22); return ;;
-    'note generate:--to') __changes_completion_filter "$current" < <(__changes_completion_values_23); return ;;
-    'note list:--commit') __changes_completion_filter "$current" < <(__changes_completion_values_24); return ;;
-    'note list:--from') __changes_completion_filter "$current" < <(__changes_completion_values_25); return ;;
-    'note list:--provider') __changes_completion_filter "$current" < <(__changes_completion_values_26); return ;;
-    'note list:--to') __changes_completion_filter "$current" < <(__changes_completion_values_27); return ;;
+    'interactive:--commit') __changes_completion_filter "$current" < <(__changes_completion_values_5); return ;;
+    'interactive:--layout') __changes_completion_filter "$current" < <(__changes_completion_values_6); return ;;
+    'interactive:--view') __changes_completion_filter "$current" < <(__changes_completion_values_7); return ;;
+    'workspace:--commit') __changes_completion_filter "$current" < <(__changes_completion_values_8); return ;;
+    'workspace:--layout') __changes_completion_filter "$current" < <(__changes_completion_values_9); return ;;
+    'workspace:--view') __changes_completion_filter "$current" < <(__changes_completion_values_10); return ;;
+    'difftool:--color') __changes_completion_filter "$current" < <(__changes_completion_values_12); return ;;
+    'difftool:--engine') __changes_completion_filter "$current" < <(__changes_completion_values_13); return ;;
+    'difftool:--layout') __changes_completion_filter "$current" < <(__changes_completion_values_14); return ;;
+    'render:--color') __changes_completion_filter "$current" < <(__changes_completion_values_15); return ;;
+    'render:--engine') __changes_completion_filter "$current" < <(__changes_completion_values_16); return ;;
+    'render:--layout') __changes_completion_filter "$current" < <(__changes_completion_values_17); return ;;
+    'note add:--commit') __changes_completion_filter "$current" < <(__changes_completion_values_18); return ;;
+    'note add:--file') __changes_completion_filter "$current" < <(__changes_completion_values_19); return ;;
+    'note add:--from') __changes_completion_filter "$current" < <(__changes_completion_values_20); return ;;
+    'note add:--origin') __changes_completion_filter "$current" < <(__changes_completion_values_21); return ;;
+    'note add:--provider') __changes_completion_filter "$current" < <(__changes_completion_values_22); return ;;
+    'note add:--side') __changes_completion_filter "$current" < <(__changes_completion_values_23); return ;;
+    'note add:--to') __changes_completion_filter "$current" < <(__changes_completion_values_24); return ;;
+    'note generate:--commit') __changes_completion_filter "$current" < <(__changes_completion_values_25); return ;;
+    'note generate:--from') __changes_completion_filter "$current" < <(__changes_completion_values_26); return ;;
+    'note generate:--provider') __changes_completion_filter "$current" < <(__changes_completion_values_27); return ;;
+    'note generate:--store') __changes_completion_filter "$current" < <(__changes_completion_values_28); return ;;
+    'note generate:--to') __changes_completion_filter "$current" < <(__changes_completion_values_29); return ;;
+    'note list:--commit') __changes_completion_filter "$current" < <(__changes_completion_values_30); return ;;
+    'note list:--from') __changes_completion_filter "$current" < <(__changes_completion_values_31); return ;;
+    'note list:--provider') __changes_completion_filter "$current" < <(__changes_completion_values_32); return ;;
+    'note list:--to') __changes_completion_filter "$current" < <(__changes_completion_values_33); return ;;
   esac
   case "$context:$current" in
     ':--color='*) __changes_completion_filter "${current#*=}" "--color=" < <(__changes_completion_values_0); return ;;
     ':--engine='*) __changes_completion_filter "${current#*=}" "--engine=" < <(__changes_completion_values_1); return ;;
     ':--group-provider='*) __changes_completion_filter "${current#*=}" "--group-provider=" < <(__changes_completion_values_2); return ;;
     ':--layout='*) __changes_completion_filter "${current#*=}" "--layout=" < <(__changes_completion_values_3); return ;;
-    'difftool:--color='*) __changes_completion_filter "${current#*=}" "--color=" < <(__changes_completion_values_6); return ;;
-    'difftool:--engine='*) __changes_completion_filter "${current#*=}" "--engine=" < <(__changes_completion_values_7); return ;;
-    'difftool:--layout='*) __changes_completion_filter "${current#*=}" "--layout=" < <(__changes_completion_values_8); return ;;
-    'render:--color='*) __changes_completion_filter "${current#*=}" "--color=" < <(__changes_completion_values_9); return ;;
-    'render:--engine='*) __changes_completion_filter "${current#*=}" "--engine=" < <(__changes_completion_values_10); return ;;
-    'render:--layout='*) __changes_completion_filter "${current#*=}" "--layout=" < <(__changes_completion_values_11); return ;;
-    'note add:--commit='*) __changes_completion_filter "${current#*=}" "--commit=" < <(__changes_completion_values_12); return ;;
-    'note add:--file='*) __changes_completion_filter "${current#*=}" "--file=" < <(__changes_completion_values_13); return ;;
-    'note add:--from='*) __changes_completion_filter "${current#*=}" "--from=" < <(__changes_completion_values_14); return ;;
-    'note add:--origin='*) __changes_completion_filter "${current#*=}" "--origin=" < <(__changes_completion_values_15); return ;;
-    'note add:--provider='*) __changes_completion_filter "${current#*=}" "--provider=" < <(__changes_completion_values_16); return ;;
-    'note add:--side='*) __changes_completion_filter "${current#*=}" "--side=" < <(__changes_completion_values_17); return ;;
-    'note add:--to='*) __changes_completion_filter "${current#*=}" "--to=" < <(__changes_completion_values_18); return ;;
-    'note generate:--commit='*) __changes_completion_filter "${current#*=}" "--commit=" < <(__changes_completion_values_19); return ;;
-    'note generate:--from='*) __changes_completion_filter "${current#*=}" "--from=" < <(__changes_completion_values_20); return ;;
-    'note generate:--provider='*) __changes_completion_filter "${current#*=}" "--provider=" < <(__changes_completion_values_21); return ;;
-    'note generate:--store='*) __changes_completion_filter "${current#*=}" "--store=" < <(__changes_completion_values_22); return ;;
-    'note generate:--to='*) __changes_completion_filter "${current#*=}" "--to=" < <(__changes_completion_values_23); return ;;
-    'note list:--commit='*) __changes_completion_filter "${current#*=}" "--commit=" < <(__changes_completion_values_24); return ;;
-    'note list:--from='*) __changes_completion_filter "${current#*=}" "--from=" < <(__changes_completion_values_25); return ;;
-    'note list:--provider='*) __changes_completion_filter "${current#*=}" "--provider=" < <(__changes_completion_values_26); return ;;
-    'note list:--to='*) __changes_completion_filter "${current#*=}" "--to=" < <(__changes_completion_values_27); return ;;
+    'interactive:--commit='*) __changes_completion_filter "${current#*=}" "--commit=" < <(__changes_completion_values_5); return ;;
+    'interactive:--layout='*) __changes_completion_filter "${current#*=}" "--layout=" < <(__changes_completion_values_6); return ;;
+    'interactive:--view='*) __changes_completion_filter "${current#*=}" "--view=" < <(__changes_completion_values_7); return ;;
+    'workspace:--commit='*) __changes_completion_filter "${current#*=}" "--commit=" < <(__changes_completion_values_8); return ;;
+    'workspace:--layout='*) __changes_completion_filter "${current#*=}" "--layout=" < <(__changes_completion_values_9); return ;;
+    'workspace:--view='*) __changes_completion_filter "${current#*=}" "--view=" < <(__changes_completion_values_10); return ;;
+    'difftool:--color='*) __changes_completion_filter "${current#*=}" "--color=" < <(__changes_completion_values_12); return ;;
+    'difftool:--engine='*) __changes_completion_filter "${current#*=}" "--engine=" < <(__changes_completion_values_13); return ;;
+    'difftool:--layout='*) __changes_completion_filter "${current#*=}" "--layout=" < <(__changes_completion_values_14); return ;;
+    'render:--color='*) __changes_completion_filter "${current#*=}" "--color=" < <(__changes_completion_values_15); return ;;
+    'render:--engine='*) __changes_completion_filter "${current#*=}" "--engine=" < <(__changes_completion_values_16); return ;;
+    'render:--layout='*) __changes_completion_filter "${current#*=}" "--layout=" < <(__changes_completion_values_17); return ;;
+    'note add:--commit='*) __changes_completion_filter "${current#*=}" "--commit=" < <(__changes_completion_values_18); return ;;
+    'note add:--file='*) __changes_completion_filter "${current#*=}" "--file=" < <(__changes_completion_values_19); return ;;
+    'note add:--from='*) __changes_completion_filter "${current#*=}" "--from=" < <(__changes_completion_values_20); return ;;
+    'note add:--origin='*) __changes_completion_filter "${current#*=}" "--origin=" < <(__changes_completion_values_21); return ;;
+    'note add:--provider='*) __changes_completion_filter "${current#*=}" "--provider=" < <(__changes_completion_values_22); return ;;
+    'note add:--side='*) __changes_completion_filter "${current#*=}" "--side=" < <(__changes_completion_values_23); return ;;
+    'note add:--to='*) __changes_completion_filter "${current#*=}" "--to=" < <(__changes_completion_values_24); return ;;
+    'note generate:--commit='*) __changes_completion_filter "${current#*=}" "--commit=" < <(__changes_completion_values_25); return ;;
+    'note generate:--from='*) __changes_completion_filter "${current#*=}" "--from=" < <(__changes_completion_values_26); return ;;
+    'note generate:--provider='*) __changes_completion_filter "${current#*=}" "--provider=" < <(__changes_completion_values_27); return ;;
+    'note generate:--store='*) __changes_completion_filter "${current#*=}" "--store=" < <(__changes_completion_values_28); return ;;
+    'note generate:--to='*) __changes_completion_filter "${current#*=}" "--to=" < <(__changes_completion_values_29); return ;;
+    'note list:--commit='*) __changes_completion_filter "${current#*=}" "--commit=" < <(__changes_completion_values_30); return ;;
+    'note list:--from='*) __changes_completion_filter "${current#*=}" "--from=" < <(__changes_completion_values_31); return ;;
+    'note list:--provider='*) __changes_completion_filter "${current#*=}" "--provider=" < <(__changes_completion_values_32); return ;;
+    'note list:--to='*) __changes_completion_filter "${current#*=}" "--to=" < <(__changes_completion_values_33); return ;;
   esac
   case "$context" in
     '')
       __changes_completion_filter "$current" < <(
-        printf '%s\n' 'completion' 'difftool' 'render' 'generate' 'note' 'provider' '--budget' '--color' '--config' '--engine' '--filter' '--group-provider' '--interval' '--layout' '--no-calls' '--no-groups' '--no-notes' '--no-symbols' '--recursive' '-r' '--root' '--since' '--staged' '--stat' '-s' '--version' '--watch' '-w' '--width'
+        printf '%s\n' 'completion' 'interactive' 'workspace' 'difftool' 'render' 'generate' 'note' 'provider' '--budget' '--color' '--config' '--engine' '--filter' '--group-provider' '--interval' '--layout' '--no-calls' '--no-groups' '--no-notes' '--no-symbols' '--quiet' '--recursive' '-r' '--root' '--since' '--staged' '--stat' '-s' '--version' '--watch' '-w' '--width'
         __changes_completion_values_4
       )
       ;;
@@ -322,10 +380,20 @@ _changes_complete() {
         printf '%s\n' 'bash' 'zsh' 'fish' 'nu'
       )
       ;;
+    'interactive')
+      __changes_completion_filter "$current" < <(
+        printf '%s\n' '--commit' '--config' '--history-limit' '--layout' '--no-calls' '--no-groups' '--no-notes' '--no-symbols' '--quiet' '--refresh' '--view' '--width'
+      )
+      ;;
+    'workspace')
+      __changes_completion_filter "$current" < <(
+        printf '%s\n' '--commit' '--config' '--history-limit' '--layout' '--no-calls' '--no-groups' '--no-notes' '--no-symbols' '--quiet' '--refresh' '--view' '--width' '--interval' '--watch'
+      )
+      ;;
     'difftool')
       __changes_completion_filter "$current" < <(
         printf '%s\n' '--color' '--config' '--engine' '--difftool' '--layout' '--width'
-        __changes_completion_values_5
+        __changes_completion_values_11
       )
       ;;
     'render')
@@ -366,13 +434,13 @@ _changes_complete() {
     'provider list')
       __changes_completion_filter "$current" < <(
         printf '%s\n' '--config' '--json'
-        __changes_completion_values_28
+        __changes_completion_values_34
       )
       ;;
     'provider validate')
       __changes_completion_filter "$current" < <(
         printf '%s\n' '--config' '--json'
-        __changes_completion_values_29
+        __changes_completion_values_35
       )
       ;;
   esac

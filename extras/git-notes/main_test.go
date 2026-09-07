@@ -32,6 +32,9 @@ func TestCreateAndListUseOnlyChangesRef(t *testing.T) {
 	if len(created.Notes) != 1 || created.Notes[0].Source != providerName || created.Notes[0].Anchor != request.Note.Anchor {
 		t.Fatalf("created notes = %+v", created.Notes)
 	}
+	if created.Notes[0].Provenance != request.Note.Provenance {
+		t.Fatalf("created provenance = %+v", created.Notes[0].Provenance)
+	}
 	if after := runGitTest(t, repository, nil, "notes", "show", request.Head); after != before {
 		t.Fatalf("default notes ref changed: %q", after)
 	}
@@ -1063,6 +1066,7 @@ func noteDraft(request provider.Request, key, summary string) *provider.NoteDraf
 	return &provider.NoteDraft{
 		Key: key, Summary: summary, Rationale: "Because callers rely on it.",
 		Author: "agent", Origin: provider.NoteOriginAgent, Session: "session-1",
+		Provenance: provider.NoteProvenance{Kind: "harness", Tool: "codex", SessionID: "session-1", WorkingDirectory: request.Directory},
 		Anchor: provider.NoteAnchor{
 			Path: "main.go", Side: provider.NoteSideRight, Line: 3,
 			Base: request.Base, Head: request.Head, Fingerprint: request.Fingerprint,

@@ -36,34 +36,44 @@ const (
 
 // NoteDraft is the source-neutral input to a writable note provider.
 type NoteDraft struct {
-	Key       string     `json:"key,omitempty"`
-	Summary   string     `json:"summary"`
-	Rationale string     `json:"rationale,omitempty"`
-	Author    string     `json:"author"`
-	Origin    string     `json:"origin"`
-	Session   string     `json:"session,omitempty"`
-	Anchor    NoteAnchor `json:"anchor"`
+	Key        string         `json:"key,omitempty"`
+	Summary    string         `json:"summary"`
+	Rationale  string         `json:"rationale,omitempty"`
+	Author     string         `json:"author"`
+	Origin     string         `json:"origin"`
+	Session    string         `json:"session,omitempty"`
+	Provenance NoteProvenance `json:"provenance,omitempty"`
+	Anchor     NoteAnchor     `json:"anchor"`
 }
 
 // Note is one normalized annotation returned by any provider.
 type Note struct {
-	ID        string        `json:"id"`
-	Source    string        `json:"source"`
-	SourceID  string        `json:"sourceId"`
-	ThreadID  string        `json:"threadId,omitempty"`
-	ReplyTo   string        `json:"replyTo,omitempty"`
-	Summary   string        `json:"summary"`
-	Rationale string        `json:"rationale,omitempty"`
-	Author    string        `json:"author"`
-	Origin    string        `json:"origin"`
-	Authority string        `json:"authority"`
-	State     string        `json:"state"`
-	Session   string        `json:"session,omitempty"`
-	CreatedAt string        `json:"createdAt,omitempty"`
-	UpdatedAt string        `json:"updatedAt,omitempty"`
-	URL       string        `json:"url,omitempty"`
-	Anchor    NoteAnchor    `json:"anchor"`
-	Placement NotePlacement `json:"placement"`
+	ID         string         `json:"id"`
+	Source     string         `json:"source"`
+	SourceID   string         `json:"sourceId"`
+	ThreadID   string         `json:"threadId,omitempty"`
+	ReplyTo    string         `json:"replyTo,omitempty"`
+	Summary    string         `json:"summary"`
+	Rationale  string         `json:"rationale,omitempty"`
+	Author     string         `json:"author"`
+	Origin     string         `json:"origin"`
+	Authority  string         `json:"authority"`
+	State      string         `json:"state"`
+	Session    string         `json:"session,omitempty"`
+	CreatedAt  string         `json:"createdAt,omitempty"`
+	UpdatedAt  string         `json:"updatedAt,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	Provenance NoteProvenance `json:"provenance,omitempty"`
+	Anchor     NoteAnchor     `json:"anchor"`
+	Placement  NotePlacement  `json:"placement"`
+}
+
+type NoteProvenance struct {
+	Kind             string `json:"kind,omitempty"`
+	Tool             string `json:"tool,omitempty"`
+	SessionID        string `json:"sessionId,omitempty"`
+	WorkingDirectory string `json:"workingDirectory,omitempty"`
+	URL              string `json:"url,omitempty"`
 }
 
 // NoteAnchor is the immutable location recorded by the note source.
@@ -110,6 +120,9 @@ func validateNoteDraft(note *NoteDraft) error {
 	if hasControlCharacter(note.Key) || len([]rune(note.Key)) > 200 {
 		return errors.New("note key must be at most 200 characters without control bytes")
 	}
+	if err := validateNoteProvenance(note.Provenance); err != nil {
+		return err
+	}
 	return validateAnchor(note.Anchor)
 }
 
@@ -130,6 +143,9 @@ func validateNote(note Note) error {
 	}
 	if !oneOf(note.State, NoteStateOpen, NoteStateResolved) {
 		return fmt.Errorf("note %q has invalid state %q", note.ID, note.State)
+	}
+	if err := validateNoteProvenance(note.Provenance); err != nil {
+		return fmt.Errorf("note %q: %w", note.ID, err)
 	}
 	if err := validateAnchor(note.Anchor); err != nil {
 		return fmt.Errorf("note %q: %w", note.ID, err)
@@ -160,6 +176,22 @@ func validateNote(note Note) error {
 		}
 		if _, err := time.Parse(time.RFC3339, value); err != nil {
 			return fmt.Errorf("note %q %s is not RFC3339: %w", note.ID, name, err)
+		}
+	}
+	return nil
+}
+
+func validateNoteProvenance(value NoteProvenance) error {
+	for name, field := range map[string]string{
+		"kind": value.Kind, "tool": value.Tool, "sessionId": value.SessionID,
+	} {
+		if hasControlCharacter(field) || len([]rune(field)) > 200 {
+			return fmt.Errorf("note provenance %s must be at most 200 characters without control bytes", name)
+		}
+	}
+	for name, field := range map[string]string{"workingDirectory": value.WorkingDirectory, "url": value.URL} {
+		if hasControlCharacter(field) || len([]rune(field)) > 4096 {
+			return fmt.Errorf("note provenance %s must be at most 4096 characters without control bytes", name)
 		}
 	}
 	return nil

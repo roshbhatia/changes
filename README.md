@@ -64,6 +64,12 @@ only. Git must be on `PATH`.
 # Review the current repository as an embedded diff tree.
 changes
 
+# Keep the diff tree, files, history, and notes in one interactive workspace.
+changes interactive
+
+# Feed the same structured snapshot to Neovim or another client.
+changes workspace --refresh | jq '.files[] | {path, noteCount}'
+
 # Review all repositories in a workspace since two hours ago.
 changes --recursive --since "2 hours ago"
 
@@ -85,6 +91,8 @@ workflows. Note workflows cover
 related hunks by request flow instead of file name. See
 [`Git notes storage`](examples/git-notes/README.md) for explicit ref sharing and
 [`Neovim notes`](examples/neovim-notes/README.md) for popup annotations.
+[`Interactive workspace`](examples/interactive-workspace/README.md) covers file
+and history navigation, dock and layout toggles, cached state, and annotation.
 
 ## Configure it
 
@@ -99,6 +107,14 @@ diff:
   engine: builtin
   layout: unified
   difftool: [difft, --color, always, --display, side-by-side, $LOCAL, $REMOTE]
+interactive:
+  cacheMaxEntries: 64
+  cacheTtl: 24h
+  dock: left
+  historyLimit: 50
+  navigator: tree
+  noteInput: popup
+  progress: true
 notes:
   editor: [nvim, $FILE]
   generatorTimeout: 5m
@@ -147,6 +163,25 @@ Group, symbol, and call results use the provider cache. Note reads, writes, and
 generation are never cached. Watch mode polls readers at
 `notes.refreshInterval`. It never runs a note generator. One `--budget` covers
 all provider analysis for the rendered comparison.
+
+`changes interactive` opens the cohesive diff tree in an alternate screen. Its
+Files and History tabs share a navigator. Press `t` for tree or list, `d` for a
+left or bottom dock, `s` for unified or side-by-side diff, and `v` to switch
+working, staged, and first-parent commit views. Press `:` for the command
+palette. Press `a` to use `interactive.noteInput`, or use `n` for the popup and
+`e` for `$EDITOR`. Changes saves layout and exact selection under
+`XDG_STATE_HOME`. It keeps replaceable snapshots under `XDG_CACHE_HOME`.
+
+`changes workspace` emits `changes.workspace/v1` JSON for external clients.
+The snapshot contains the repository and comparison identity, freshness,
+logical groups, structured hunk lines, note IDs, complete threads, provenance,
+history, provider failures, and the exact rendered tree. `--watch` emits
+versioned JSON Lines events. `--refresh` bypasses the initial snapshot and
+provider result cache. It does not fetch remotes or push Git refs.
+
+Outside Git difftool mode, Changes displays progress only when standard error
+is a terminal. `--quiet` disables it. Standard output stays safe for pipes and
+JSON consumers.
 
 `changes.notes.create` accepts either one `note` or one atomic `notes` batch.
 `changes note generate` writes every generated note as one batch and uses the
@@ -210,6 +245,7 @@ directory. Each repository's files hang under its own name.
 | `--no-groups` | Skip logical change grouping |
 | `--no-notes` | Skip diff notes |
 | `--no-symbols` | Skip symbol analysis |
+| `--quiet` | Disable progress output |
 | `--recursive`, `-r` | Read all workspace repositories |
 | `--root` `<value>` | Workspace scan root |
 | `--since` `<value>` | Left revision or time |
@@ -218,6 +254,46 @@ directory. Each repository's files hang under its own name.
 | `--watch`, `-w` | Watch for changes |
 | `--width` `<value>` | Render width |
 | `--version` | Print the Changes version |
+
+### `changes interactive`
+
+Review changes in an interactive workspace
+
+| Option | Description |
+| --- | --- |
+| `--commit` `<value>` | Commit to compare with its first parent |
+| `--config` `<value>` | YAML configuration file |
+| `--history-limit` `<value>` | Commit history limit |
+| `--layout` `<value>` | Diff layout |
+| `--no-calls` | Skip call analysis |
+| `--no-groups` | Skip logical change grouping |
+| `--no-notes` | Skip diff notes |
+| `--no-symbols` | Skip symbol analysis |
+| `--quiet` | Disable progress output |
+| `--refresh` | Bypass cached workspace and provider results |
+| `--view` `<value>` | Git comparison view |
+| `--width` `<value>` | Render width |
+
+### `changes workspace`
+
+Emit the versioned workspace snapshot
+
+| Option | Description |
+| --- | --- |
+| `--commit` `<value>` | Commit to compare with its first parent |
+| `--config` `<value>` | YAML configuration file |
+| `--history-limit` `<value>` | Commit history limit |
+| `--layout` `<value>` | Diff layout |
+| `--no-calls` | Skip call analysis |
+| `--no-groups` | Skip logical change grouping |
+| `--no-notes` | Skip diff notes |
+| `--no-symbols` | Skip symbol analysis |
+| `--quiet` | Disable progress output |
+| `--refresh` | Bypass cached workspace and provider results |
+| `--view` `<value>` | Git comparison view |
+| `--width` `<value>` | Render width |
+| `--interval` `<value>` | Watch interval |
+| `--watch` | Emit JSON Lines refresh events |
 
 ### `changes completion`
 

@@ -579,8 +579,84 @@ for _, fixture in ipairs({
   )
 end
 
+vim.cmd.edit(vim.fn.fnameescape(nested_path))
+local workspace_capture
+local workspace_result
+local workspace_root = assert(vim.uv.fs_realpath(assert(vim.fs.root(nested_path, ".git"))))
+local workspace_snapshot = {
+  version = "changes.workspace/v1",
+  repository = { root = workspace_root, name = "repository", branch = "main", head = "head" },
+  comparison = { kind = "working", fingerprint = "fingerprint", layout = "unified" },
+  freshness = { state = "fresh", generatedAt = "2026-09-07T00:00:00Z" },
+  history = {},
+  groups = {},
+  files = {
+    {
+      path = "nested/nested.lua",
+      added = 1,
+      deleted = 0,
+      noteCount = 1,
+      noteAuthors = { "reviewer" },
+      hunks = {
+        {
+          oldStart = 1,
+          newStart = 1,
+          lines = { { kind = "added", text = "nested", newLine = 1, noteIds = { "github-pr:1" } } },
+        },
+      },
+    },
+  },
+  notes = {
+    {
+      id = "github-pr:1",
+      source = "github-pr",
+      sourceId = "1",
+      summary = "Review note",
+      author = "reviewer",
+      origin = "external",
+      authority = "external",
+      state = "open",
+      anchor = { path = "nested/nested.lua", side = "RIGHT", line = 1, target = "working" },
+      placement = { path = "nested/nested.lua", side = "RIGHT", line = 1, target = "working", quality = "exact" },
+    },
+  },
+  threads = {},
+  failures = {},
+  rendered = "1 file\n└── nested.lua",
+}
+vim.system = function(argv, options, callback)
+  workspace_capture = { argv = argv, options = options }
+  callback({ code = 0, stdout = vim.json.encode(workspace_snapshot), stderr = "" })
+  return {}
+end
+local workspace = require("changes.workspace")
+workspace.read({ refresh = true }, function(err, snapshot)
+  workspace_result = { err = err, snapshot = snapshot }
+end)
+wait_for(function()
+  return workspace_result ~= nil
+end, "workspace callback did not run")
+check(
+  workspace_result and workspace_result.err == nil,
+  "workspace reader rejected a valid snapshot: " .. tostring(workspace_result and workspace_result.err)
+    .. " root=" .. workspace_root .. " cwd=" .. tostring(workspace_capture and workspace_capture.options.cwd)
+)
+check(vim.deep_equal(workspace_capture.argv, { "changes", "workspace", "--view", "working", "--layout", "unified", "--refresh" }), "workspace argv is not shell-free and exact")
+check(
+  workspace_capture.options.cwd == workspace_root and workspace_capture.options.text == true,
+  "workspace process options are wrong: " .. vim.inspect(workspace_capture.options)
+)
+if workspace_result and workspace_result.snapshot then
+  workspace.decorate(0, workspace_result.snapshot)
+  local marks = vim.api.nvim_buf_get_extmarks(0, -1, 0, -1, { details = true })
+  check(#marks == 1, "workspace decoration did not place one note extmark")
+  check(marks[1] and vim.inspect(marks[1][4].virt_text):find("reviewer via github%-pr") ~= nil, "workspace extmark omitted note provenance")
+end
+
 vim.cmd.runtime("plugin/changes.lua")
 check(vim.fn.exists(":ChangesNote") == 2, ":ChangesNote is not registered")
+check(vim.fn.exists(":ChangesWorkspace") == 2, ":ChangesWorkspace is not registered")
+check(vim.fn.exists(":ChangesWorkspaceDecorate") == 2, ":ChangesWorkspaceDecorate is not registered")
 check(vim.fn.maparg("<Plug>(changes-note)", "n") ~= "", "normal Plug mapping is missing")
 check(vim.fn.maparg("<Plug>(changes-note)", "x") ~= "", "visual Plug mapping is missing")
 check(vim.fn.maparg("<leader>cn", "n") == "", "plugin installed a user keybinding")

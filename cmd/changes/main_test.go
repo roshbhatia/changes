@@ -428,7 +428,7 @@ func TestCompletionsKeepNestedProviderContext(t *testing.T) {
 			"printf '%s\\n' 'list' 'validate'",
 		}},
 		{"zsh", []string{
-			"values=( 'completion' 'difftool' 'render' 'generate' 'note' 'provider')",
+			"values=( 'completion' 'interactive' 'workspace' 'difftool' 'render' 'generate' 'note' 'provider')",
 			"'*:argument:__changes_completion_values_",
 			"'changes' '__values' 'repository'",
 			"'2:command:(list validate)'",
@@ -462,6 +462,8 @@ func TestCommandMetadataIncludesEveryDispatchedCommand(t *testing.T) {
 	t.Parallel()
 	for _, path := range [][]string{
 		{"completion"},
+		{"interactive"},
+		{"workspace"},
 		{"difftool"},
 		{"generate"},
 		{"note"},
@@ -1056,6 +1058,28 @@ func TestEmbeddedNoteUsesTheSelectedSideInSideBySideView(t *testing.T) {
 	noteLine := strings.Index(output, "● line 1@right")
 	if diffLine < 0 || noteLine < diffLine {
 		t.Fatalf("side-by-side note =\n%s", output)
+	}
+}
+
+func TestEmbeddedNotesRenderOneNestedThreadWithProvenance(t *testing.T) {
+	options := diffview.Options{
+		Width: 120, Unified: true,
+		Files:   []diffview.File{{Path: "main.go", Add: 1, Hunks: []diffview.Hunk{{OldAt: 1, NewAt: 1, Lines: []diffview.Line{{Kind: '+', Text: "new()"}}}}}},
+		Symbols: map[string][]diffview.Symbol{}, Edges: map[string][]diffview.Edge{}, Pins: map[string]bool{},
+	}
+	placement := provider.NotePlacement{Path: "main.go", Side: provider.NoteSideRight, Line: 1, Quality: provider.PlacementExact}
+	notes := []provider.Note{
+		{ID: "review:1", ThreadID: "review:thread", Summary: "Please guard this call", Author: "alice", Source: "review-source", State: provider.NoteStateOpen, Placement: placement, Provenance: provider.NoteProvenance{Kind: "pull-request-review", Tool: "review-client", SessionID: "pull/42"}},
+		{ID: "review:2", ThreadID: "review:thread", ReplyTo: "review:1", Summary: "Guard added", Author: "review-bot", Source: "review-source", State: provider.NoteStateOpen, Placement: placement},
+	}
+	output, err := renderTreeWithNotes(options, noteLayer{values: notes}, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"thread · 2 comments", "alice via review-source", "Please guard this call", "review-bot via review-source", "Guard added", "session pull/42"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("thread omitted %q:\n%s", want, output)
+		}
 	}
 }
 

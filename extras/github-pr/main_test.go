@@ -232,7 +232,9 @@ func TestNotesPaginatesAndPreservesReviewThreadState(t *testing.T) {
 	first, reply, outdated := response.Notes[0], response.Notes[1], response.Notes[2]
 	if first.Anchor.Line != 8 || first.Placement.Line != 11 || first.Anchor.Head != "original" ||
 		first.Anchor.StartSide != provider.NoteSideRight || first.Placement.StartSide != provider.NoteSideRight ||
-		first.Anchor.Target != provider.NoteTargetCommits || first.State != provider.NoteStateOpen {
+		first.Anchor.Target != provider.NoteTargetCommits || first.State != provider.NoteStateOpen ||
+		first.Provenance.Kind != "pull-request-review" || first.Provenance.Tool != "github" ||
+		first.Provenance.SessionID != "pull/42" || first.Provenance.URL != first.URL {
 		t.Fatalf("first note = %+v", first)
 	}
 	if reply.ReplyTo != first.ID || reply.ThreadID != first.ThreadID {

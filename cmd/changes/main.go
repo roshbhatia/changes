@@ -29,7 +29,9 @@ import (
 	"github.com/roshbhatia/changes/internal/appconfig"
 	"github.com/roshbhatia/changes/internal/engine"
 	"github.com/roshbhatia/changes/internal/provider"
+	"github.com/roshbhatia/changes/internal/progress"
 	"github.com/roshbhatia/changes/internal/source"
+	"github.com/roshbhatia/changes/internal/workspaceview"
 	"github.com/roshbhatia/go-utils/completion"
 	"github.com/roshbhatia/go-utils/diffview"
 	gitutil "github.com/roshbhatia/go-utils/git"
@@ -71,6 +73,14 @@ func main() {
 		runRender(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "workspace" {
+		runWorkspace(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "interactive" {
+		runInteractive(os.Args[2:])
+		return
+	}
 	configPath := argumentValue(os.Args[1:], "config")
 	configured, err := appconfig.Load(configPath)
 	if err != nil {
@@ -89,6 +99,7 @@ func main() {
 	noGroups := flag.Bool("no-groups", false, flagDescription(metadata, "no-groups"))
 	noNotes := flag.Bool("no-notes", false, flagDescription(metadata, "no-notes"))
 	noSyms := flag.Bool("no-symbols", false, flagDescription(metadata, "no-symbols"))
+	quiet := flag.Bool("quiet", false, flagDescription(metadata, "quiet"))
 	budget := flag.Duration("budget", time.Duration(configured.Providers.Timeout), flagDescription(metadata, "budget"))
 	recurse := flag.Bool("recursive", false, flagDescription(metadata, "recursive"))
 	flag.BoolVar(recurse, "r", false, shortFlagDescription(metadata, "r"))
@@ -229,7 +240,9 @@ func main() {
 	}
 
 	if !*watch {
+		indicator := progress.Start(os.Stderr, "reading changes", configured.Interactive.Progress && !*quiet)
 		out, err := view.render()
+		indicator.Stop()
 		if err != nil {
 			fail(err)
 		}
@@ -369,6 +382,11 @@ func (r renderer) renderPatches(patches []string) (string, error) {
 }
 
 func (r renderer) renderPatchesWithNotes(patches []string, notes noteLayer, refreshNotes bool) (string, noteLayer, error) {
+	output, notes, _, err := r.renderPatchesWithAnalysis(patches, notes, refreshNotes)
+	return output, notes, err
+}
+
+func (r renderer) renderPatchesWithAnalysis(patches []string, notes noteLayer, refreshNotes bool) (string, noteLayer, diffAnalysis, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.budget)
 	defer cancel()
 	if refreshNotes {
@@ -379,20 +397,20 @@ func (r renderer) renderPatchesWithNotes(patches []string, notes noteLayer, refr
 	options := analysis.options
 	if r.stat || r.engine == "builtin" {
 		body, err := renderTreeWithGroups(options, analysis.groups, notes, r.columns())
-		return body, notes, err
+		return body, notes, analysis, err
 	}
 	body, err := r.display(patches)
 	if err != nil {
-		return "", notes, err
+		return "", notes, analysis, err
 	}
 	summary := semanticTreeRows(options, notes, r.columns())
 	if summary == "" {
-		return body, notes, nil
+		return body, notes, analysis, nil
 	}
 	if body == "" {
-		return summary, notes, nil
+		return summary, notes, analysis, nil
 	}
-	return summary + "\n\n" + body, notes, nil
+	return summary + "\n\n" + body, notes, analysis, nil
 }
 
 func (r renderer) noteContext(ctx context.Context, patches []string) noteRead {
@@ -1140,13 +1158,69 @@ func fitTreeWidth(body string, width int) string {
 
 func embeddedNoteLines(prefix string, notes []provider.Note, stale bool, width int) []string {
 	rows := []string{}
-	for index, note := range notes {
-		last := index == len(notes)-1
+	groups := noteRenderGroups(notes)
+	for index, group := range groups {
+		last := index == len(groups)-1
 		connector := "├── "
 		continuation := "│   "
 		if last {
 			connector = "└── "
 			continuation = "    "
+		}
+		if group.threadID != "" {
+			headPrefix := prefix + contextKind.Render(connector)
+			label := contextTitle.Render("●") + " " + contextPath.Render(noteLocation(group.notes[0])) + " · " +
+				contextKind.Render(fmt.Sprintf("thread · %d comments", len(group.notes)))
+			rows = append(rows, headPrefix+truncateTreeLabel(label, width-lipgloss.Width(ansi.Strip(headPrefix))))
+			bodyPrefix := prefix + contextKind.Render(continuation)
+			rows = append(rows, embeddedThreadLines(bodyPrefix, group.notes, stale, width)...)
+			continue
+		}
+		note := group.notes[0]
+		headPrefix := prefix + contextKind.Render(connector)
+		rows = append(rows, headPrefix+truncateTreeLabel(noteTreeLabel(note, stale), width-lipgloss.Width(ansi.Strip(headPrefix))))
+		bodyPrefix := prefix + contextKind.Render(continuation)
+		rows = append(rows, bodyPrefix+truncateTreeLabel(cleanNoteOneLine(note.Summary), width-lipgloss.Width(ansi.Strip(bodyPrefix))))
+		if rationale := cleanNoteOneLine(note.Rationale); rationale != "" {
+			rows = append(rows, bodyPrefix+contextKind.Render(truncateTreeLabel(rationale, width-lipgloss.Width(ansi.Strip(bodyPrefix)))))
+		}
+		if provenance := noteProvenanceLabel(note); provenance != "" {
+			rows = append(rows, bodyPrefix+contextKind.Render(truncateTreeLabel(provenance, width-lipgloss.Width(ansi.Strip(bodyPrefix)))))
+		}
+	}
+	return rows
+}
+
+type noteRenderGroup struct {
+	threadID string
+	notes    []provider.Note
+}
+
+func noteRenderGroups(notes []provider.Note) []noteRenderGroup {
+	groups := []noteRenderGroup{}
+	threads := map[string]int{}
+	for _, note := range notes {
+		if note.ThreadID == "" {
+			groups = append(groups, noteRenderGroup{notes: []provider.Note{note}})
+			continue
+		}
+		if index, ok := threads[note.ThreadID]; ok {
+			groups[index].notes = append(groups[index].notes, note)
+			continue
+		}
+		threads[note.ThreadID] = len(groups)
+		groups = append(groups, noteRenderGroup{threadID: note.ThreadID, notes: []provider.Note{note}})
+	}
+	return groups
+}
+
+func embeddedThreadLines(prefix string, notes []provider.Note, stale bool, width int) []string {
+	rows := []string{}
+	for index, note := range notes {
+		last := index == len(notes)-1
+		connector, continuation := "├── ", "│   "
+		if last {
+			connector, continuation = "└── ", "    "
 		}
 		headPrefix := prefix + contextKind.Render(connector)
 		rows = append(rows, headPrefix+truncateTreeLabel(noteTreeLabel(note, stale), width-lipgloss.Width(ansi.Strip(headPrefix))))
@@ -1155,8 +1229,35 @@ func embeddedNoteLines(prefix string, notes []provider.Note, stale bool, width i
 		if rationale := cleanNoteOneLine(note.Rationale); rationale != "" {
 			rows = append(rows, bodyPrefix+contextKind.Render(truncateTreeLabel(rationale, width-lipgloss.Width(ansi.Strip(bodyPrefix)))))
 		}
+		if provenance := noteProvenanceLabel(note); provenance != "" {
+			rows = append(rows, bodyPrefix+contextKind.Render(truncateTreeLabel(provenance, width-lipgloss.Width(ansi.Strip(bodyPrefix)))))
+		}
 	}
 	return rows
+}
+
+func noteProvenanceLabel(note provider.Note) string {
+	parts := []string{}
+	if note.Provenance.Kind != "" {
+		parts = append(parts, note.Provenance.Kind)
+	}
+	if note.Provenance.Tool != "" {
+		parts = append(parts, "tool "+note.Provenance.Tool)
+	}
+	if note.Provenance.SessionID != "" {
+		parts = append(parts, "session "+note.Provenance.SessionID)
+	}
+	if note.Provenance.WorkingDirectory != "" {
+		parts = append(parts, "from "+note.Provenance.WorkingDirectory)
+	}
+	url := note.Provenance.URL
+	if url == "" {
+		url = note.URL
+	}
+	if url != "" {
+		parts = append(parts, url)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func noteTreeLabel(note provider.Note, stale bool) string {
@@ -1916,6 +2017,7 @@ directory. Each repository's files hang under its own name.`,
 			{Name: "no-groups", Description: "Skip logical change grouping"},
 			{Name: "no-notes", Description: "Skip diff notes"},
 			{Name: "no-symbols", Description: "Skip symbol analysis"},
+			{Name: "quiet", Description: "Disable progress output"},
 			{Name: "recursive", Short: "r", Description: "Read all workspace repositories"},
 			{Name: "root", Description: "Workspace scan root", Value: true},
 			{Name: "since", Description: "Left revision or time", Value: true},
@@ -1926,6 +2028,8 @@ directory. Each repository's files hang under its own name.`,
 			{Name: "version", Description: "Print the Changes version"},
 		},
 		Subcommands: []completion.Command{
+			{Name: "interactive", Synopsis: "Review changes in an interactive workspace", Flags: workspaceCommandFlags(true)},
+			{Name: "workspace", Synopsis: "Emit the versioned workspace snapshot", Flags: workspaceCommandFlags(false)},
 			{
 				Name:              "completion",
 				Synopsis:          "Generate shell completions",
@@ -2272,6 +2376,10 @@ func runGenerate(args []string) {
 	if err != nil {
 		fail(err)
 	}
+	workspaceSchema, err := workspaceview.Schema()
+	if err != nil {
+		fail(err)
+	}
 	readme, err := os.ReadFile("README.md")
 	if err != nil {
 		fail(fmt.Errorf("read README.md: %w", err))
@@ -2281,9 +2389,10 @@ func runGenerate(args []string) {
 		fail(err)
 	}
 	outputs := map[string][]byte{
-		"README.md":                   []byte(generated),
-		"schema/changes.schema.json":  schema,
-		"schema/provider.schema.json": providerSchema,
+		"README.md":                    []byte(generated),
+		"schema/changes.schema.json":   schema,
+		"schema/provider.schema.json":  providerSchema,
+		"schema/workspace.schema.json": workspaceSchema,
 	}
 	for shell, path := range map[string]string{
 		"bash": "completions/changes.bash",

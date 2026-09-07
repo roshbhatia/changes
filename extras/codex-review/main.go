@@ -139,6 +139,7 @@ func generate(ctx context.Context, request provider.Request, run runner) (provid
 			ID: hex.EncodeToString(digest[:12]), Source: providerName, SourceID: hex.EncodeToString(digest[:12]),
 			Summary: summary, Rationale: rationale, Author: "codex", Origin: provider.NoteOriginAgent,
 			Authority: provider.NoteAuthorityAdvisory, State: provider.NoteStateOpen, Anchor: anchor,
+			Provenance: provider.NoteProvenance{Kind: "post-hoc-review", Tool: "codex", WorkingDirectory: request.Directory},
 			Placement: provider.NotePlacement{
 				Path: path, Side: side, StartSide: startSide, StartLine: candidate.StartLine, Line: candidate.Line,
 				Base: request.Base, Head: request.Head, Fingerprint: request.Fingerprint,
@@ -264,6 +265,7 @@ func validationNote(request provider.Request) provider.Note {
 		ID: "validation", Source: providerName, SourceID: "validation", Summary: "Check the ready result",
 		Author: "codex", Origin: provider.NoteOriginAgent, Authority: provider.NoteAuthorityAdvisory,
 		State: provider.NoteStateOpen, Anchor: anchor,
+		Provenance: provider.NoteProvenance{Kind: "post-hoc-review", Tool: "codex", WorkingDirectory: request.Directory},
 		Placement: provider.NotePlacement{
 			Path: "main.ts", Side: provider.NoteSideRight, Line: 2,
 			Base: request.Base, Head: request.Head, Fingerprint: request.Fingerprint,

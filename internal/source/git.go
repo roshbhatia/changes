@@ -7,10 +7,101 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/roshbhatia/go-utils/git"
 )
+
+type Commit struct {
+	OID        string
+	Parent     string
+	Summary    string
+	Author     string
+	AuthoredAt string
+}
+
+func History(directory string, limit int) ([]Commit, error) {
+	if limit <= 0 {
+		return []Commit{}, nil
+	}
+	format := "%H%x00%P%x00%an%x00%aI%x00%s%x00"
+	output, err := git.Output(directory, "log", "-z", "--no-decorate", "--max-count="+strconv.Itoa(limit), "--format="+format)
+	if err != nil {
+		return nil, fmt.Errorf("read commit history: %w", err)
+	}
+	fields := strings.Split(output, "\x00")
+	commits := make([]Commit, 0, limit)
+	for index := 0; index+4 < len(fields); {
+		if fields[index] == "" {
+			index++
+			continue
+		}
+		parents := strings.Fields(fields[index+1])
+		parent := ""
+		if len(parents) > 0 {
+			parent = parents[0]
+		}
+		commits = append(commits, Commit{
+			OID: fields[index], Parent: parent, Author: fields[index+2],
+			AuthoredAt: fields[index+3], Summary: fields[index+4],
+		})
+		index += 5
+	}
+	return commits, nil
+}
+
+func CommitComparison(directory, revision string) (Spec, Commit, error) {
+	oid, err := git.Output(directory, "rev-parse", "--verify", revision+"^{commit}")
+	if err != nil {
+		return Spec{}, Commit{}, fmt.Errorf("resolve commit %q: %w", revision, err)
+	}
+	oid = strings.TrimSpace(oid)
+	metadata, err := git.Output(directory, "show", "-s", "--format=%P%x00%an%x00%aI%x00%s", oid)
+	if err != nil {
+		return Spec{}, Commit{}, fmt.Errorf("read commit %s: %w", oid, err)
+	}
+	fields := strings.SplitN(metadata, "\x00", 4)
+	if len(fields) != 4 {
+		return Spec{}, Commit{}, errors.New("git returned malformed commit metadata")
+	}
+	parents := strings.Fields(fields[0])
+	parent := ""
+	if len(parents) > 0 {
+		parent = parents[0]
+	} else {
+		parent, err = emptyTree(directory)
+		if err != nil {
+			return Spec{}, Commit{}, err
+		}
+	}
+	commit := Commit{OID: oid, Parent: parent, Author: fields[1], AuthoredAt: fields[2], Summary: strings.TrimSpace(fields[3])}
+	return Spec{Dir: directory, From: parent, To: oid}, commit, nil
+}
+
+func RepositoryIdentity(directory string) (branch, head string, err error) {
+	head, err = git.Output(directory, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return "", "", fmt.Errorf("resolve HEAD: %w", err)
+	}
+	branch, branchErr := git.Output(directory, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if branchErr != nil {
+		branch = ""
+	}
+	return strings.TrimSpace(branch), strings.TrimSpace(head), nil
+}
+
+func emptyTree(directory string) (string, error) {
+	command := exec.Command("git", "hash-object", "-t", "tree", "--stdin")
+	command.Dir = directory
+	command.Env = git.CleanEnv()
+	command.Stdin = strings.NewReader("")
+	output, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve empty tree: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
 
 // MaxPatchBytes bounds one patch before Changes copies or analyzes it.
 const MaxPatchBytes = 64 << 20

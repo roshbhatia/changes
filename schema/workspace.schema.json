@@ -1,0 +1,574 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Comparison": {
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "working",
+            "staged",
+            "commit"
+          ]
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "base": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "layout": {
+          "type": "string",
+          "enum": [
+            "unified",
+            "side-by-side"
+          ]
+        },
+        "firstParent": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "fingerprint",
+        "layout"
+      ]
+    },
+    "Failure": {
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "stale": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "message"
+      ]
+    },
+    "File": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "noteCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "noteAuthors": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hunks": {
+          "items": {
+            "$ref": "#/$defs/Hunk"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "added",
+        "deleted",
+        "hunks"
+      ]
+    },
+    "Freshness": {
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "fresh",
+            "cached",
+            "stale",
+            "refreshing"
+          ]
+        },
+        "generatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "refreshedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "cacheHit": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "state",
+        "generatedAt"
+      ]
+    },
+    "Group": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "parentId": {
+          "type": "string"
+        },
+        "order": {
+          "type": "integer"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "files"
+      ]
+    },
+    "HistoryEntry": {
+      "properties": {
+        "oid": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "authoredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "noteCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "noteAuthors": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "oid",
+        "summary",
+        "author",
+        "authoredAt"
+      ]
+    },
+    "Hunk": {
+      "properties": {
+        "oldStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "newStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "lines": {
+          "items": {
+            "$ref": "#/$defs/Line"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "oldStart",
+        "newStart",
+        "lines"
+      ]
+    },
+    "Line": {
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "context",
+            "added",
+            "deleted"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "oldLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "newLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "noteIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "text"
+      ]
+    },
+    "Note": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "replyTo": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "authority": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/NoteProvenance"
+        },
+        "anchor": {
+          "$ref": "#/$defs/NoteAnchor"
+        },
+        "placement": {
+          "$ref": "#/$defs/NotePlacement"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "source",
+        "sourceId",
+        "summary",
+        "author",
+        "origin",
+        "authority",
+        "state",
+        "anchor",
+        "placement"
+      ]
+    },
+    "NoteAnchor": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "side": {
+          "type": "string"
+        },
+        "startSide": {
+          "type": "string"
+        },
+        "startLine": {
+          "type": "integer"
+        },
+        "line": {
+          "type": "integer"
+        },
+        "base": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "side"
+      ]
+    },
+    "NotePlacement": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "side": {
+          "type": "string"
+        },
+        "startSide": {
+          "type": "string"
+        },
+        "startLine": {
+          "type": "integer"
+        },
+        "line": {
+          "type": "integer"
+        },
+        "base": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "quality": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "target",
+        "quality"
+      ]
+    },
+    "NoteProvenance": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "workingDirectory": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "NoteThread": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "side": {
+          "type": "string"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string"
+        },
+        "comments": {
+          "items": {
+            "$ref": "#/$defs/Note"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "path",
+        "state",
+        "comments"
+      ]
+    },
+    "Repository": {
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "root",
+        "name"
+      ]
+    }
+  },
+  "properties": {
+    "version": {
+      "type": "string"
+    },
+    "repository": {
+      "$ref": "#/$defs/Repository"
+    },
+    "comparison": {
+      "$ref": "#/$defs/Comparison"
+    },
+    "freshness": {
+      "$ref": "#/$defs/Freshness"
+    },
+    "history": {
+      "items": {
+        "$ref": "#/$defs/HistoryEntry"
+      },
+      "type": "array"
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/Group"
+      },
+      "type": "array"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/File"
+      },
+      "type": "array"
+    },
+    "notes": {
+      "items": {
+        "$ref": "#/$defs/Note"
+      },
+      "type": "array"
+    },
+    "threads": {
+      "items": {
+        "$ref": "#/$defs/NoteThread"
+      },
+      "type": "array"
+    },
+    "failures": {
+      "items": {
+        "$ref": "#/$defs/Failure"
+      },
+      "type": "array"
+    },
+    "rendered": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "version",
+    "repository",
+    "comparison",
+    "freshness",
+    "history",
+    "groups",
+    "files",
+    "notes",
+    "threads",
+    "failures",
+    "rendered"
+  ],
+  "title": "Changes workspace snapshot"
+}

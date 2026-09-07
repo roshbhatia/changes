@@ -6,9 +6,96 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/roshbhatia/go-utils/git"
 )
+
+func TestHistoryAndCommitComparisonUseFirstParent(t *testing.T) {
+	directory := t.TempDir()
+	for _, arguments := range [][]string{
+		{"init", "--quiet"},
+		{"config", "user.name", "Changes test"},
+		{"config", "user.email", "changes@example.invalid"},
+	} {
+		if err := git.Run(directory, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(directory, "file.txt")
+	for index, body := range []string{"first\n", "second\n"} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := git.Run(directory, "add", "file.txt"); err != nil {
+			t.Fatal(err)
+		}
+		if err := git.Run(directory, "commit", "--quiet", "-m", []string{"root", "second"}[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := History(directory, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[0].Summary != "second" || history[1].Summary != "root" {
+		t.Fatalf("history = %#v", history)
+	}
+	if _, err := time.Parse(time.RFC3339, history[0].AuthoredAt); err != nil {
+		t.Fatalf("authored time = %q: %v", history[0].AuthoredAt, err)
+	}
+	second, commit, err := CommitComparison(directory, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.From != history[0].Parent || second.To != history[0].OID || commit != history[0] {
+		t.Fatalf("comparison = %#v, commit = %#v, history = %#v", second, commit, history[0])
+	}
+	root, rootCommit, err := CommitComparison(directory, history[1].OID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.From == "" || root.To != history[1].OID || rootCommit.Parent != root.From {
+		t.Fatalf("root comparison = %#v, commit = %#v", root, rootCommit)
+	}
+	patch, err := root.Diff()
+	if err != nil || !strings.Contains(patch, "+first") {
+		t.Fatalf("root patch = %q, error = %v", patch, err)
+	}
+}
+
+func TestRepositoryIdentitySupportsDetachedHead(t *testing.T) {
+	directory := t.TempDir()
+	for _, arguments := range [][]string{
+		{"init", "--quiet"},
+		{"config", "user.name", "Changes test"},
+		{"config", "user.email", "changes@example.invalid"},
+	} {
+		if err := git.Run(directory, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(directory, "file"), []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := git.Run(directory, "add", "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := git.Run(directory, "commit", "--quiet", "-m", "root"); err != nil {
+		t.Fatal(err)
+	}
+	branch, head, err := RepositoryIdentity(directory)
+	if err != nil || branch == "" || head == "" {
+		t.Fatalf("identity = %q %q, %v", branch, head, err)
+	}
+	if err := git.Run(directory, "checkout", "--quiet", "--detach", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	branch, detached, err := RepositoryIdentity(directory)
+	if err != nil || branch != "" || detached != head {
+		t.Fatalf("detached identity = %q %q, %v", branch, detached, err)
+	}
+}
 
 func TestStagedDiffRejectsTwoRevisionsBeforeGit(t *testing.T) {
 	_, err := (Spec{Staged: true, From: "HEAD~1", To: "HEAD"}).Diff()
