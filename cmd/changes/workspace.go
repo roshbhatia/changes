@@ -25,6 +25,7 @@ import (
 
 type workspaceOptions struct {
 	configPath   string
+	color        string
 	view         string
 	commit       string
 	layout       string
@@ -76,7 +77,10 @@ func parseWorkspaceOptions(args []string, interactive bool) (workspaceOptions, a
 	if err != nil {
 		return workspaceOptions{}, appconfig.Config{}, err
 	}
-	options := workspaceOptions{configPath: *configPath}
+	options := workspaceOptions{configPath: *configPath, color: "never"}
+	if interactive {
+		options.color = "always"
+	}
 	flags.StringVar(&options.view, "view", "working", flagDescription(metadata, "view"))
 	flags.StringVar(&options.commit, "commit", "HEAD", flagDescription(metadata, "commit"))
 	flags.StringVar(&options.layout, "layout", configured.Diff.Layout, flagDescription(metadata, "layout"))
@@ -191,7 +195,7 @@ func currentRepositoryRoot() (string, error) {
 }
 
 func workspaceSlot(options workspaceOptions) string {
-	return strings.Join([]string{options.view, options.commit, options.layout}, "\x00")
+	return strings.Join([]string{options.view, options.commit, options.layout, options.color}, "\x00")
 }
 
 func snapshotWithinTTL(snapshot workspaceview.Snapshot, ttl time.Duration) bool {
@@ -240,12 +244,16 @@ func buildWorkspaceSnapshotWithNotes(root string, options workspaceOptions, conf
 	if width <= 0 {
 		width = 100
 	}
+	renderColor := options.color
+	if renderColor == "" {
+		renderColor = "never"
+	}
 	view := renderer{
 		specs: []source.Spec{spec}, under: root, width: width,
 		syms: !options.noSymbols, calls: !options.noCalls, groups: !options.noGroups,
 		groupProvider: configured.Providers.Group, notes: !options.noNotes,
 		noteInterval: configured.Notes.RefreshInterval.Duration(), budget: time.Duration(configured.Providers.Timeout),
-		engine: "builtin", engineOptions: engine.Options{Color: "never", Layout: options.layout, Width: width},
+		engine: "builtin", engineOptions: engine.Options{Color: renderColor, Layout: options.layout, Width: width},
 		providers: discovery.Providers, providerCache: provider.CachePolicy{TTL: time.Duration(configured.Providers.CacheTTL), MaxEntries: configured.Providers.CacheMaxEntries},
 	}
 	if options.refresh {

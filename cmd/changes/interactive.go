@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -16,6 +17,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
 	"github.com/roshbhatia/changes/internal/appconfig"
@@ -32,6 +35,8 @@ type noteWritten struct {
 	output string
 	err    error
 }
+
+type workspaceRefreshTick time.Time
 
 type navItem struct {
 	label string
@@ -69,11 +74,17 @@ var (
 	interactiveMuted      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	interactiveActive     = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
 	interactiveError      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	interactivePlain      = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	interactiveRule       = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("8"))
 	interactiveExecutable = os.Executable
 	interactiveCommand    = exec.Command
 )
 
 func runInteractive(args []string) {
+	// Pin ANSI slots because Bubble Tea v1 can parse terminal color replies as input.
+	lipgloss.SetColorProfile(termenv.ANSI)
+	lipgloss.SetHasDarkBackground(true)
+
 	options, configured, err := parseWorkspaceOptions(args, true)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -120,7 +131,12 @@ func runInteractive(args []string) {
 			model.setSnapshot(cached)
 		}
 	}
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	if width, height, sizeErr := term.GetSize(int(os.Stdout.Fd())); sizeErr == nil {
+		model.width, model.height = width, height
+		model.resize()
+		model.options.width = model.diffWidth()
+	}
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	result, err := program.Run()
 	if err != nil {
 		fail(err)
@@ -157,7 +173,15 @@ func newInteractiveModel(root string, options workspaceOptions, configured appco
 }
 
 func (model interactiveModel) Init() tea.Cmd {
-	return tea.Batch(model.spinner.Tick, model.refreshCommand())
+	return tea.Batch(model.spinner.Tick, model.refreshCommand(), model.refreshTick())
+}
+
+func (model interactiveModel) refreshTick() tea.Cmd {
+	interval := model.configured.Notes.RefreshInterval.Duration()
+	if interval <= 0 {
+		return nil
+	}
+	return tea.Tick(interval, func(at time.Time) tea.Msg { return workspaceRefreshTick(at) })
 }
 
 func (model interactiveModel) refreshCommand() tea.Cmd {
@@ -182,10 +206,19 @@ func sameWorkspaceComparison(snapshot workspaceview.Snapshot, options workspaceO
 func (model interactiveModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := message.(type) {
 	case tea.WindowSizeMsg:
+		previousWidth := model.diffWidth()
 		model.width, model.height = value.Width, value.Height
 		model.resize()
+		if width := model.diffWidth(); width > 0 && width != previousWidth {
+			model.options.width = width
+			model.loading = true
+			return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
+		}
 		return model, nil
 	case spinner.TickMsg:
+		if !model.loading {
+			return model, nil
+		}
 		var command tea.Cmd
 		model.spinner, command = model.spinner.Update(value)
 		return model, command
@@ -195,12 +228,19 @@ func (model interactiveModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.message = value.err.Error()
 			return model, nil
 		}
-		model.message = "workspace refreshed"
+		model.message = ""
 		model.setSnapshot(value.snapshot)
 		if err := model.store.SaveSnapshot(workspaceSlot(model.options), value.snapshot); err != nil {
 			model.message = "cache: " + err.Error()
 		}
 		return model, nil
+	case workspaceRefreshTick:
+		command := model.refreshTick()
+		if model.loading || model.mode != "normal" {
+			return model, command
+		}
+		model.loading = true
+		return model, tea.Batch(command, model.spinner.Tick, model.refreshCommand())
 	case noteWritten:
 		model.loading = false
 		if value.err != nil {
@@ -210,17 +250,28 @@ func (model interactiveModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.message = strings.TrimSpace(value.output)
 		model.options.refresh = true
 		model.loading = true
-		return model, model.refreshCommand()
+		return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 	case tea.KeyMsg:
 		return model.handleKey(value)
+	case tea.MouseMsg:
+		return model.handleMouse(value)
 	}
 	return model, nil
 }
 
 func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if isInteractiveTerminalReply(key.String()) {
+		return model, nil
+	}
 	if key.String() == "ctrl+c" {
 		_ = model.persistState()
 		return model, tea.Quit
+	}
+	if model.showHelp {
+		if key.String() == "?" || key.String() == "esc" {
+			model.showHelp = false
+		}
+		return model, nil
 	}
 	if model.mode == "note" {
 		if key.String() == "esc" {
@@ -237,7 +288,7 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.mode = "normal"
 			model.note.Blur()
 			model.loading = true
-			return model, model.noteCommand(message, false)
+			return model, tea.Batch(model.spinner.Tick, model.noteCommand(message, false))
 		}
 		var command tea.Cmd
 		model.note, command = model.note.Update(key)
@@ -246,7 +297,7 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if model.mode == "command" {
 		switch key.String() {
 		case "esc":
-			model.mode, model.command = "normal", ""
+			model.mode, model.command, model.message = "normal", "", ""
 			return model, nil
 		case "enter":
 			command := model.command
@@ -263,18 +314,24 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				model.command = model.commands[len(model.commands)-1]
 			}
 			return model, nil
+		case "tab":
+			model.command, model.message = completeInteractiveCommand(model.command)
+			return model, nil
 		case "backspace":
 			_, size := utf8.DecodeLastRuneInString(model.command)
 			if size > 0 {
 				model.command = model.command[:len(model.command)-size]
 			}
+			model.message = ""
 			return model, nil
 		case " ":
 			model.command += " "
+			model.message = ""
 			return model, nil
 		default:
 			if key.Type == tea.KeyRunes {
 				model.command += string(key.Runes)
+				model.message = ""
 			}
 			return model, nil
 		}
@@ -286,13 +343,17 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		model.showHelp = !model.showHelp
 	case ":":
-		model.mode = "command"
+		model.mode, model.message = "command", ""
 	case "tab":
 		if model.focus == "main" {
 			model.focus = "navigator"
 		} else {
 			model.focus = "main"
 		}
+	case "ctrl+h", "ctrl+j":
+		model.focus = "navigator"
+	case "ctrl+l", "ctrl+k":
+		model.focus = "main"
 	case "f":
 		model.toggleTab()
 	case "t":
@@ -308,6 +369,9 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.configured.Interactive.Dock = "left"
 		}
 		model.resize()
+		model.options.width = model.diffWidth()
+		model.loading = true
+		return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 	case "s":
 		if model.options.layout == "unified" {
 			model.options.layout = "side-by-side"
@@ -315,15 +379,15 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.options.layout = "unified"
 		}
 		model.loading = true
-		return model, model.refreshCommand()
+		return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 	case "v":
 		model.cycleView()
 		model.loading = true
-		return model, model.refreshCommand()
+		return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 	case "r":
 		model.options.refresh = true
 		model.loading = true
-		return model, model.refreshCommand()
+		return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 	case "n":
 		if model.selectedFile() == "" {
 			model.message = "select a changed file before adding a note"
@@ -340,7 +404,7 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 			model.loading = true
-			return model, model.noteCommand("", true)
+			return model, tea.Batch(model.spinner.Tick, model.noteCommand("", true))
 		}
 		if model.selectedFile() == "" {
 			model.message = "select a changed file before adding a note"
@@ -356,7 +420,7 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 		model.loading = true
-		return model, model.noteCommand("", true)
+		return model, tea.Batch(model.spinner.Tick, model.noteCommand("", true))
 	case "up", "k":
 		if model.focus == "navigator" {
 			model.moveSelection(-1)
@@ -381,12 +445,60 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return model, command
 }
 
+func (model interactiveModel) handleMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if model.showHelp || model.mode != "normal" || mouse.Y < 1 || mouse.Y >= model.height-1 {
+		return model, nil
+	}
+	inNavigator := false
+	navigatorRow := -1
+	if model.effectiveDock() == "left" {
+		inNavigator = mouse.X < model.navigatorWidth()
+		navigatorRow = mouse.Y - 2
+	} else {
+		mainHeight := model.bodyHeight() - model.navigatorHeight()
+		inNavigator = mouse.Y >= 1+mainHeight
+		navigatorRow = mouse.Y - (1 + mainHeight) - 1
+	}
+	if mouse.Action == tea.MouseActionPress && mouse.Button == tea.MouseButtonLeft {
+		if inNavigator {
+			model.focus = "navigator"
+			if navigatorRow > 0 {
+				start, end := model.navigatorWindow()
+				index := start + navigatorRow - 1
+				if index >= start && index < end {
+					model.selected = index
+					model.line = 0
+				}
+			}
+		} else {
+			model.focus = "main"
+		}
+		return model, nil
+	}
+	if mouse.Button != tea.MouseButtonWheelUp && mouse.Button != tea.MouseButtonWheelDown {
+		return model, nil
+	}
+	if inNavigator {
+		model.focus = "navigator"
+		delta := 1
+		if mouse.Button == tea.MouseButtonWheelUp {
+			delta = -1
+		}
+		model.moveSelection(delta)
+		return model, nil
+	}
+	model.focus = "main"
+	var command tea.Cmd
+	model.viewport, command = model.viewport.Update(mouse)
+	return model, command
+}
+
 func (model interactiveModel) runPaletteCommand(command string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(command)
 	if len(fields) == 0 {
 		return model, nil
 	}
-	commands := []string{"dock", "layout", "navigator", "note", "quit", "refresh", "tab", "view"}
+	commands := interactivePaletteCommands()
 	exact := slices.Contains(commands, fields[0]) || fields[0] == "q"
 	if !exact {
 		matches := []string{}
@@ -409,17 +521,18 @@ func (model interactiveModel) runPaletteCommand(command string) (tea.Model, tea.
 		return model, tea.Quit
 	case "refresh":
 		model.options.refresh, model.loading = true, true
-		return model, model.refreshCommand()
+		return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 	case "dock":
 		if len(fields) == 2 && (fields[1] == "left" || fields[1] == "bottom") {
 			model.configured.Interactive.Dock = fields[1]
 			model.resize()
-			return model, nil
+			model.options.width, model.loading = model.diffWidth(), true
+			return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 		}
 	case "layout":
 		if len(fields) == 2 && (fields[1] == "unified" || fields[1] == "side-by-side") {
 			model.options.layout, model.loading = fields[1], true
-			return model, model.refreshCommand()
+			return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 		}
 	case "navigator":
 		if len(fields) == 2 && (fields[1] == "tree" || fields[1] == "list") {
@@ -440,7 +553,7 @@ func (model interactiveModel) runPaletteCommand(command string) (tea.Model, tea.
 				model.options.commit = fields[2]
 			}
 			model.loading = true
-			return model, model.refreshCommand()
+			return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 		}
 	case "note":
 		if len(fields) == 2 && fields[1] == "popup" {
@@ -451,11 +564,49 @@ func (model interactiveModel) runPaletteCommand(command string) (tea.Model, tea.
 		}
 		if len(fields) == 2 && fields[1] == "editor" {
 			model.loading = true
-			return model, model.noteCommand("", true)
+			return model, tea.Batch(model.spinner.Tick, model.noteCommand("", true))
 		}
 	}
 	model.message = "unknown command: " + command
 	return model, nil
+}
+
+func completeInteractiveCommand(command string) (string, string) {
+	trailingSpace := strings.HasSuffix(command, " ")
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return command, strings.Join(interactivePaletteCommands(), "  ")
+	}
+	if len(fields) == 1 && !trailingSpace {
+		matches := matchingInteractiveValues(interactivePaletteCommands(), fields[0])
+		if len(matches) == 1 {
+			return matches[0] + " ", ""
+		}
+		return command, strings.Join(matches, "  ")
+	}
+	values := interactivePaletteValues[fields[0]]
+	if len(values) == 0 || len(fields) > 2 || len(fields) == 2 && trailingSpace {
+		return command, ""
+	}
+	prefix := ""
+	if len(fields) == 2 {
+		prefix = fields[1]
+	}
+	matches := matchingInteractiveValues(values, prefix)
+	if len(matches) == 1 {
+		return fields[0] + " " + matches[0], ""
+	}
+	return command, strings.Join(matches, "  ")
+}
+
+func matchingInteractiveValues(values []string, prefix string) []string {
+	matches := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
+			matches = append(matches, value)
+		}
+	}
+	return matches
 }
 
 func (model interactiveModel) noteCommand(message string, editor bool) tea.Cmd {
@@ -515,34 +666,35 @@ func (model *interactiveModel) setSnapshot(snapshot workspaceview.Snapshot) {
 }
 
 func (model *interactiveModel) resize() {
-	availableHeight := max(4, model.height-3)
-	if model.configured.Interactive.Dock == "bottom" {
-		navHeight := min(10, max(5, availableHeight/3))
-		model.viewport.Width = max(20, model.width-2)
-		model.viewport.Height = max(3, availableHeight-navHeight-1)
-		return
-	}
-	navWidth := min(44, max(26, model.width/3))
-	model.viewport.Width = max(20, model.width-navWidth-3)
-	model.viewport.Height = availableHeight
+	model.viewport.Width = max(1, model.diffWidth())
+	model.viewport.Height = max(1, model.diffHeight())
+	model.note.SetWidth(max(20, min(72, model.diffWidth()-2)))
+	model.note.SetHeight(max(3, min(6, model.diffHeight()-3)))
 }
 
 func (model interactiveModel) View() string {
-	status := model.statusLine()
+	if model.width < 40 || model.height < 10 {
+		return model.tooSmallView()
+	}
+	status := interactiveFit(model.statusLine(), model.width)
 	if model.showHelp {
-		return status + "\n" + model.helpView()
+		body := interactiveBox("keys", model.width, model.bodyHeight(), model.helpView(), true)
+		return status + "\n" + body + "\n" + interactiveFit(interactiveMuted.Render("esc close"), model.width)
 	}
 	navigator := model.navigatorView()
-	main := model.viewport.View()
-	if model.configured.Interactive.Dock == "bottom" {
-		mainWidth := max(20, model.width-2)
-		body := lipgloss.NewStyle().Width(mainWidth).Render(main) + "\n" + navigator
-		return status + "\n" + body + "\n" + model.footerView()
+	main := model.mainView()
+	var body string
+	if model.effectiveDock() == "bottom" {
+		mainHeight := model.bodyHeight() - model.navigatorHeight()
+		body = interactiveBox("changes", model.width, mainHeight, main, model.focus == "main") + "\n" +
+			interactiveBox("explorer", model.width, model.navigatorHeight(), navigator, model.focus == "navigator")
+	} else {
+		navWidth := model.navigatorWidth()
+		left := interactiveBox("explorer", navWidth, model.bodyHeight(), navigator, model.focus == "navigator")
+		right := interactiveBox("changes", model.width-navWidth, model.bodyHeight(), main, model.focus == "main")
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
-	navWidth := min(44, max(26, model.width/3))
-	left := lipgloss.NewStyle().Width(navWidth).Render(navigator)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, " │ ", main)
-	return status + "\n" + body + "\n" + model.footerView()
+	return status + "\n" + body + "\n" + interactiveFit(model.footerView(), model.width)
 }
 
 func (model interactiveModel) statusLine() string {
@@ -590,15 +742,7 @@ func (model interactiveModel) navigatorView() string {
 	}
 	rows := []string{files + "  " + history + "  " + interactiveMuted.Render(model.configured.Interactive.Navigator)}
 	items := model.navigatorItems()
-	limit := max(1, model.height-5)
-	if model.configured.Interactive.Dock == "bottom" {
-		limit = min(9, max(3, (model.height-3)/3-1))
-	}
-	start := max(0, model.selected-limit/2)
-	if start+limit > len(items) {
-		start = max(0, len(items)-limit)
-	}
-	end := min(len(items), start+limit)
+	start, end := model.navigatorWindow()
 	for index := start; index < end; index++ {
 		item := items[index]
 		prefix := "  "
@@ -610,6 +754,13 @@ func (model interactiveModel) navigatorView() string {
 			row = interactiveActive.Render(row)
 		}
 		rows = append(rows, row)
+	}
+	if len(items) == 0 {
+		if model.activeTab() == "history" {
+			rows = append(rows, interactiveMuted.Render("No commit history"))
+		} else {
+			rows = append(rows, interactiveMuted.Render("No changed files"))
+		}
 	}
 	return strings.Join(rows, "\n")
 }
@@ -710,7 +861,7 @@ func (model interactiveModel) activateSelection() (tea.Model, tea.Cmd) {
 	if item.oid != "" {
 		model.options.view, model.options.commit, model.loading = "commit", item.oid, true
 		model.focus = "main"
-		return model, model.refreshCommand()
+		return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 	}
 	if item.path != "" {
 		lines := strings.Split(model.snapshot.Rendered, "\n")
@@ -773,7 +924,11 @@ func (model interactiveModel) footerView() string {
 		return model.note.View() + "\n" + interactiveMuted.Render("ctrl+s save · esc cancel")
 	}
 	if model.mode == "command" {
-		return ":" + model.command
+		line := interactiveAccent.Render(":"+model.command) + interactiveActive.Render(" ")
+		if model.message != "" {
+			line += interactiveMuted.Render("  " + model.message)
+		}
+		return line
 	}
 	if model.message != "" {
 		if strings.Contains(model.message, "error") || strings.Contains(model.message, "failed") {
@@ -784,19 +939,167 @@ func (model interactiveModel) footerView() string {
 	if len(model.snapshot.Failures) > 0 {
 		return interactiveError.Render(model.snapshot.Failures[0].Message)
 	}
-	return interactiveMuted.Render("tab focus · f files/history · t tree/list · d dock · s layout · v view · [ ] line · a configured note · n popup · e editor · r refresh · : commands · ? help · q quit")
+	ids := []string{"focus", "move", "activate", "refresh", "command", "help", "quit"}
+	if model.width >= 110 {
+		ids = []string{"focus", "move", "activate", "tab", "layout", "view", "refresh", "command", "help", "quit"}
+	}
+	name := "changes"
+	if model.focus == "navigator" {
+		name = "explorer"
+	}
+	return interactiveActive.Render(name) + interactiveMuted.Render("   "+interactiveBindingHints(ids...))
 }
 
 func (model interactiveModel) helpView() string {
-	return strings.Join([]string{
-		interactiveAccent.Render("Interactive workspace"),
-		"",
-		"The main pane keeps logical groups, diff lines, context, and note threads together.",
-		"Files and History share the navigator. Enter opens a file or first-parent commit view.",
-		"",
-		"Commands: layout, dock, navigator, tab, view, refresh, note popup, note editor, quit.",
-		"Press ? to return.",
-	}, "\n")
+	keyWidth := min(23, max(12, model.width/4))
+	lines := make([]string, 0, len(interactiveBindings))
+	for _, binding := range interactiveBindings {
+		key := interactiveFit(binding.keys, keyWidth)
+		lines = append(lines, interactiveAccent.Render(key)+interactivePlain.Render(binding.description))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (model interactiveModel) mainView() string {
+	if model.snapshot.Version == "" {
+		if model.loading {
+			return model.spinner.View() + " loading workspace"
+		}
+		return interactiveMuted.Render("No workspace snapshot")
+	}
+	if len(model.snapshot.Files) == 0 || strings.TrimSpace(model.snapshot.Rendered) == "" {
+		label := "No changes in this comparison"
+		switch model.options.view {
+		case "working":
+			label = "Working tree clean"
+		case "staged":
+			label = "No staged changes"
+		case "commit":
+			label = "This commit has no first-parent changes"
+		}
+		return interactiveActive.Render(label) + "\n\n" +
+			interactiveMuted.Render(interactiveBindingHint("view")+"   "+interactiveBindingHint("refresh"))
+	}
+	return model.viewport.View()
+}
+
+func (model interactiveModel) bodyHeight() int {
+	return max(1, model.height-2)
+}
+
+func (model interactiveModel) effectiveDock() string {
+	if model.configured.Interactive.Dock == "left" && model.width >= 72 {
+		return "left"
+	}
+	return "bottom"
+}
+
+func (model interactiveModel) navigatorWidth() int {
+	return min(44, max(28, model.width/3))
+}
+
+func (model interactiveModel) navigatorHeight() int {
+	return min(10, max(5, model.bodyHeight()/3))
+}
+
+func (model interactiveModel) diffWidth() int {
+	if model.width < 1 {
+		return 0
+	}
+	if model.effectiveDock() == "left" {
+		return max(1, model.width-model.navigatorWidth()-2)
+	}
+	return max(1, model.width-2)
+}
+
+func (model interactiveModel) diffHeight() int {
+	if model.height < 1 {
+		return 0
+	}
+	if model.effectiveDock() == "bottom" {
+		return max(1, model.bodyHeight()-model.navigatorHeight()-2)
+	}
+	return max(1, model.bodyHeight()-2)
+}
+
+func (model interactiveModel) navigatorWindow() (int, int) {
+	items := model.navigatorItems()
+	height := model.bodyHeight()
+	if model.effectiveDock() == "bottom" {
+		height = model.navigatorHeight()
+	}
+	limit := max(1, height-3)
+	start := max(0, model.selected-limit/2)
+	if start+limit > len(items) {
+		start = max(0, len(items)-limit)
+	}
+	return start, min(len(items), start+limit)
+}
+
+func (model interactiveModel) tooSmallView() string {
+	if model.width < 1 || model.height < 1 {
+		return ""
+	}
+	lines := make([]string, model.height)
+	for index := range lines {
+		lines[index] = strings.Repeat(" ", model.width)
+	}
+	messages := []string{
+		fmt.Sprintf("Changes needs 40x10; this pane is %dx%d", model.width, model.height),
+		"Resize the pane or press q to quit",
+	}
+	for index, message := range messages {
+		row := model.height/2 - 1 + index
+		if row >= 0 && row < len(lines) {
+			padding := max(0, (model.width-ansi.StringWidth(message))/2)
+			lines[row] = interactiveFit(strings.Repeat(" ", padding)+message, model.width)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func interactiveFit(value string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	value = ansi.Truncate(value, width, "…")
+	if current := ansi.StringWidth(value); current < width {
+		value += strings.Repeat(" ", width-current)
+	}
+	return value
+}
+
+func interactiveBox(name string, width, height int, body string, focused bool) string {
+	if width < 4 || height < 3 {
+		return interactiveFit(body, max(0, width))
+	}
+	innerWidth, innerHeight := width-2, height-2
+	edge := interactiveRule
+	if focused {
+		edge = interactiveAccent
+	}
+	title := "─ " + name + " "
+	top := edge.Render("╭" + title + strings.Repeat("─", max(0, innerWidth-ansi.StringWidth(title))) + "╮")
+	lines := strings.Split(body, "\n")
+	if len(lines) > innerHeight {
+		lines = lines[:innerHeight]
+	}
+	for len(lines) < innerHeight {
+		lines = append(lines, "")
+	}
+	out := make([]string, 0, height)
+	out = append(out, interactiveFit(top, width))
+	for _, line := range lines {
+		out = append(out, edge.Render("│")+interactiveFit(line, innerWidth)+edge.Render("│"))
+	}
+	out = append(out, edge.Render("╰"+strings.Repeat("─", innerWidth)+"╯"))
+	return strings.Join(out, "\n")
+}
+
+func isInteractiveTerminalReply(key string) bool {
+	return key == "alt+]" || key == "alt+\\" ||
+		strings.HasPrefix(key, "]10;") || strings.HasPrefix(key, "]11;") ||
+		strings.HasPrefix(key, "10;rgb:") || strings.HasPrefix(key, "11;rgb:")
 }
 
 func (model interactiveModel) persistState() error {

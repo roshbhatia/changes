@@ -42,8 +42,8 @@ schema/workspace.schema.json
 EOF
 
 archives=("$source_dir"/dist/*.tar.gz)
-if [[ ${#archives[@]} -ne 4 ]]; then
-  printf 'expected 4 release archives, found %d\n' "${#archives[@]}" >&2
+if [[ ${#archives[@]} -ne 3 ]]; then
+  printf 'expected 3 release archives, found %d\n' "${#archives[@]}" >&2
   exit 1
 fi
 for archive in "${archives[@]}"; do

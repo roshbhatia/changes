@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 
 	"github.com/roshbhatia/changes/internal/appconfig"
@@ -168,6 +169,98 @@ func TestInteractiveModelTogglesDockLayoutAndHistory(t *testing.T) {
 	}
 }
 
+func TestInteractiveCleanWorkspaceDrawsTwoFullPanes(t *testing.T) {
+	configured := appconfig.Default()
+	model := newInteractiveModel("/repo", workspaceOptions{view: "working", commit: "HEAD", layout: "unified", color: "always", historyLimit: 5}, configured, workspaceview.Store{})
+	model.width, model.height, model.loading = 100, 30, false
+	model.resize()
+	model.setSnapshot(workspaceview.Snapshot{
+		Version:    workspaceview.SnapshotVersion,
+		Repository: workspaceview.Repository{Root: "/repo", Name: "repo", Branch: "main"},
+		Comparison: workspaceview.Comparison{Kind: "working", Layout: "unified"},
+		Freshness:  workspaceview.Freshness{State: "fresh"},
+		Files:      []workspaceview.File{},
+		History:    []workspaceview.HistoryEntry{},
+		Groups:     []workspaceview.Group{},
+		Notes:      []provider.Note{},
+		Threads:    []workspaceview.NoteThread{},
+		Failures:   []workspaceview.Failure{},
+	})
+
+	frame := model.View()
+	plain := ansi.Strip(frame)
+	for _, expected := range []string{"explorer", "changes", "No changed files", "Working tree clean", "tab pane"} {
+		if !strings.Contains(plain, expected) {
+			t.Errorf("frame omitted %q:\n%s", expected, plain)
+		}
+	}
+	lines := strings.Split(frame, "\n")
+	if len(lines) != model.height {
+		t.Fatalf("frame has %d lines, want %d", len(lines), model.height)
+	}
+	for index, line := range lines {
+		if width := ansi.StringWidth(line); width != model.width {
+			t.Fatalf("line %d has width %d, want %d: %q", index, width, model.width, ansi.Strip(line))
+		}
+	}
+}
+
+func TestInteractiveResizeFitsLongNavigatorRows(t *testing.T) {
+	configured := appconfig.Default()
+	model := newInteractiveModel("/repo", workspaceOptions{view: "working", commit: "HEAD", layout: "unified", color: "always", historyLimit: 5}, configured, workspaceview.Store{})
+	model.width, model.height, model.loading = 72, 16, false
+	model.setSnapshot(workspaceview.Snapshot{
+		Version:    workspaceview.SnapshotVersion,
+		Repository: workspaceview.Repository{Root: "/repo", Name: "repo", Branch: "main"},
+		Comparison: workspaceview.Comparison{Kind: "working", Layout: "unified"},
+		Freshness:  workspaceview.Freshness{State: "fresh"},
+		Files:      []workspaceview.File{{Path: "one/two/three/four/five/a-very-long-file-name.go", Added: 2, Deleted: 1}},
+		History:    []workspaceview.HistoryEntry{}, Groups: []workspaceview.Group{}, Notes: []provider.Note{}, Threads: []workspaceview.NoteThread{}, Failures: []workspaceview.Failure{},
+		Rendered: "a bounded diff",
+	})
+	model.resize()
+
+	for index, line := range strings.Split(model.View(), "\n") {
+		if width := ansi.StringWidth(line); width != model.width {
+			t.Fatalf("line %d has width %d, want %d: %q", index, width, model.width, ansi.Strip(line))
+		}
+	}
+	if model.viewport.Width != model.diffWidth() || model.viewport.Height != model.diffHeight() {
+		t.Fatalf("viewport = %dx%d, want %dx%d", model.viewport.Width, model.viewport.Height, model.diffWidth(), model.diffHeight())
+	}
+}
+
+func TestInteractiveKeysIgnoreTerminalRepliesAndCycleOneView(t *testing.T) {
+	model := newInteractiveModel("/repo", workspaceOptions{view: "working", commit: "HEAD", layout: "unified", historyLimit: 5}, appconfig.Default(), workspaceview.Store{})
+	model.focus = "main"
+	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("11;rgb:2424/2727/3a3a")})
+	unchanged := updated.(interactiveModel)
+	if command != nil || unchanged.focus != "main" || unchanged.options.view != "working" {
+		t.Fatalf("terminal reply changed model: %#v", unchanged)
+	}
+	updated, command = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	cycled := updated.(interactiveModel)
+	if command == nil || cycled.options.view != "staged" {
+		t.Fatalf("v cycled to %q with command %#v", cycled.options.view, command)
+	}
+}
+
+func TestInteractiveMouseFocusesPanes(t *testing.T) {
+	model := newInteractiveModel("/repo", workspaceOptions{view: "working", commit: "HEAD", layout: "unified", historyLimit: 5}, appconfig.Default(), workspaceview.Store{})
+	model.width, model.height = 100, 30
+	model.resize()
+	updated, _ := model.handleMouse(tea.MouseMsg{X: 2, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	model = updated.(interactiveModel)
+	if model.focus != "navigator" {
+		t.Fatalf("left click focus = %q", model.focus)
+	}
+	updated, _ = model.handleMouse(tea.MouseMsg{X: 80, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	model = updated.(interactiveModel)
+	if model.focus != "main" {
+		t.Fatalf("main click focus = %q", model.focus)
+	}
+}
+
 func TestInteractiveReusesNotesOnlyForSameComparison(t *testing.T) {
 	working := workspaceview.Snapshot{Comparison: workspaceview.Comparison{Kind: "working"}}
 	commit := workspaceview.Snapshot{Comparison: workspaceview.Comparison{Kind: "commit", To: "abc123"}}
@@ -208,6 +301,21 @@ func TestInteractiveCommandPalettePreservesSpaces(t *testing.T) {
 	}
 	if model.command != "layout side-by-side" {
 		t.Fatalf("command = %q", model.command)
+	}
+}
+
+func TestInteractiveCommandPaletteCompletesCommandsAndValues(t *testing.T) {
+	command, message := completeInteractiveCommand("lay")
+	if command != "layout " || message != "" {
+		t.Fatalf("command completion = %q, %q", command, message)
+	}
+	command, message = completeInteractiveCommand("layout side")
+	if command != "layout side-by-side" || message != "" {
+		t.Fatalf("value completion = %q, %q", command, message)
+	}
+	command, message = completeInteractiveCommand("n")
+	if command != "n" || !strings.Contains(message, "navigator") || !strings.Contains(message, "note") {
+		t.Fatalf("ambiguous completion = %q, %q", command, message)
 	}
 }
 
@@ -334,6 +442,12 @@ func TestInteractiveProcessRestoresAlternateScreen(t *testing.T) {
 	output := <-outputChannel
 	if !bytes.Contains(output, []byte("\x1b[?1049h")) || !bytes.Contains(output, []byte("\x1b[?1049l")) {
 		t.Fatalf("alternate-screen restoration was not visible: %q", output)
+	}
+	plain := ansi.Strip(string(output))
+	for _, expected := range []string{"explorer", "changes", "main.go", "after"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("interactive process omitted %q: %q", expected, plain)
+		}
 	}
 }
 
