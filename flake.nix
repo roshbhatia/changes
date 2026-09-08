@@ -57,7 +57,7 @@
               pname = name;
               inherit version;
               src = ./.;
-              vendorHash = "sha256-EoKGfc4WYxGzh4XNGmJzqnEj3cUEqcxpQAk/q1mIAWw=";
+              vendorHash = "sha256-M2Zdkl6z0MBRyILJeuwADtlsznALm+38UFpAxH8Mr6U=";
               subPackages = [ subPackage ];
               nativeBuildInputs = [ pkgs.makeWrapper ] ++ pkgs.lib.optional completions pkgs.installShellFiles;
               nativeCheckInputs = [ pkgs.git ];

@@ -19,7 +19,7 @@ type Config struct {
 
 type Interactive struct {
 	CacheMaxEntries int                  `json:"cacheMaxEntries,omitempty" yaml:"cacheMaxEntries,omitempty" jsonschema:"minimum=0"`
-	CacheTTL        providerlib.Duration `json:"cacheTtl,omitempty" yaml:"cacheTtl,omitempty"`
+	CacheTTL        providerlib.Duration `json:"cacheTtl,omitempty" yaml:"cacheTtl,omitempty" jsonschema:"type=string,pattern=^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"`
 	Dock            string               `json:"dock,omitempty" yaml:"dock" jsonschema:"enum=left,enum=bottom"`
 	HistoryLimit    int                  `json:"historyLimit,omitempty" yaml:"historyLimit,omitempty" jsonschema:"minimum=1"`
 	Navigator       string               `json:"navigator,omitempty" yaml:"navigator" jsonschema:"enum=tree,enum=list"`
@@ -32,18 +32,18 @@ type Interactive struct {
 type Notes struct {
 	Editor           []string             `json:"editor,omitempty" yaml:"editor"`
 	Generator        string               `json:"generator,omitempty" yaml:"generator,omitempty"`
-	GeneratorTimeout providerlib.Duration `json:"generatorTimeout,omitempty" yaml:"generatorTimeout,omitempty"`
-	RefreshInterval  providerlib.Duration `json:"refreshInterval,omitempty" yaml:"refreshInterval,omitempty"`
+	GeneratorTimeout providerlib.Duration `json:"generatorTimeout,omitempty" yaml:"generatorTimeout,omitempty" jsonschema:"type=string,pattern=^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"`
+	RefreshInterval  providerlib.Duration `json:"refreshInterval,omitempty" yaml:"refreshInterval,omitempty" jsonschema:"type=string,pattern=^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"`
 	Store            string               `json:"store,omitempty" yaml:"store,omitempty"`
 }
 
 // Providers controls external provider discovery and execution.
 type Providers struct {
 	CacheMaxEntries int                  `json:"cacheMaxEntries,omitempty" yaml:"cacheMaxEntries,omitempty" jsonschema:"minimum=0"`
-	CacheTTL        providerlib.Duration `json:"cacheTtl,omitempty" yaml:"cacheTtl,omitempty"`
+	CacheTTL        providerlib.Duration `json:"cacheTtl,omitempty" yaml:"cacheTtl,omitempty" jsonschema:"type=string,pattern=^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"`
 	Directory       string               `json:"directory,omitempty" yaml:"directory,omitempty"`
 	Group           string               `json:"group,omitempty" yaml:"group,omitempty"`
-	Timeout         providerlib.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Timeout         providerlib.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty" jsonschema:"type=string,pattern=^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"`
 }
 
 // Diff configures patch display and Git-compatible file comparison separately.

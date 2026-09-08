@@ -10,7 +10,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/mattn/go-shellwords v1.0.14
 	github.com/muesli/termenv v0.16.0
-	github.com/roshbhatia/go-utils v0.10.0
+	github.com/roshbhatia/go-utils v0.12.0
 	golang.org/x/term v0.45.0
 )
 
@@ -39,5 +39,5 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.3.8 // indirect
+	golang.org/x/text v0.14.0 // indirect
 )
