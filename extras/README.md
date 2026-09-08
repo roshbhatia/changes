@@ -36,7 +36,7 @@ into the adapter path. It does not expose those tools as profile commands.
 
 Each adapter reads one JSON request from standard input and writes one JSON
 response. The manifest follows `provider/v1`, which Changes validates against
-`schema/provider.cue` and `schema/provider.schema.json`. A provider can be
+the provider-spec contract plus `schema/narrow.cue`. A provider can be
 written in any language because the manifest only defines executable argv,
 environment templates, requirements, and actions.
 

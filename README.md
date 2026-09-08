@@ -445,7 +445,7 @@ go test -race ./...
 go run ./cmd/changes generate --check
 ./hack/audit-provider-boundary.sh .
 for manifest in extras/*/provider.yaml; do
-  cue vet schema/provider.cue "$manifest" -d '#Provider'
+  cue vet -d '#Manifest' "$PROVIDER_SPEC/provider.cue" schema/narrow.cue "$manifest"
 done
 nix flake check
 ./hack/screenshots.sh
