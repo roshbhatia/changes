@@ -1,3 +1,0 @@
-schema: spec-driven
-created: 2026-09-07
-goal: Add a cohesive interactive review workspace and a versioned snapshot API with note provenance, refresh, and per-repository state.
