@@ -15,4 +15,4 @@
 
 - [x] 3.1 Update generated help, schemas, README examples, and the interactive VHS demo with real mouse, pane, tab, and multi-commit generation flows.
 - [x] 3.2 Run focused tests, race tests, provider validation, generation checks, PTY flows, complete diff inspection, and `nix flake check -L`.
-- [ ] 3.3 Commit, push, release for macOS ARM, Linux ARM, and Linux x86, verify archives, adopt through sysinit and sysinit.laurel, switch, and verify the installed TUI.
+- [x] 3.3 Commit, push, release for macOS ARM, Linux ARM, and Linux x86, verify archives, adopt through sysinit and sysinit.laurel, switch, and verify the installed TUI.
