@@ -90,11 +90,17 @@
           },
           "type": "array"
         },
+        "generator": {
+          "type": "string"
+        },
         "generatorTimeout": {
           "$ref": "#/$defs/Duration"
         },
         "refreshInterval": {
           "$ref": "#/$defs/Duration"
+        },
+        "store": {
+          "type": "string"
         }
       },
       "additionalProperties": false,

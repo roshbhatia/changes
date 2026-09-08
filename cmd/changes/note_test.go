@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/roshbhatia/changes/internal/provider"
 	"github.com/roshbhatia/changes/internal/source"
+	"github.com/roshbhatia/go-utils/completion"
 )
 
 func TestNoteLineInPatchFindsBothSidesAndRejectsHiddenLines(t *testing.T) {
@@ -1028,6 +1030,320 @@ actions:
 	}
 }
 
+func TestNoteGenerateDraftsRepeatedFirstParentCommitsWithoutWriter(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "one\ntwo\n"})
+	commitFile := func(contents, message string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, arguments := range [][]string{{"add", "main.go"}, {"commit", "--quiet", "-m", message}} {
+			command := exec.Command("git", arguments...)
+			command.Dir = repository
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", arguments, err, output)
+			}
+		}
+		oid, err := noteGitOutput(repository, "rev-parse", "HEAD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return oid
+	}
+	first := commitFile("one\nfirst\n", "first")
+	second := commitFile("one\nsecond\n", "second")
+	firstParent, err := noteGitOutput(repository, "rev-parse", first+"^1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	providers := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "request.json")
+	manifest := fmt.Sprintf(`version: provider/v1
+name: fake
+description: test generator
+command: [%q, %q, %q, %q]
+actions:
+  changes.notes.generate:
+    description: generate notes
+`, os.Args[0], "-test.run=TestFakeNoteProviderProcess", "--", capture)
+	if err := os.WriteFile(filepath.Join(providers, "generator.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "changes.yaml")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("providers:\n  directory: %q\n", providers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	output := runNoteCLI(
+		t, repository, "note", "generate", "--config", config, "--provider", "fake",
+		"--commit", first, "--commit", "HEAD", "--draft", "--json", "--session", "review-12",
+	)
+	var document noteDraftDocument
+	if err := json.Unmarshal([]byte(output), &document); err != nil {
+		t.Fatalf("decode draft output: %v\n%s", err, output)
+	}
+	if document.Version != "changes.note-drafts/v1" || len(document.Comparisons) != 2 {
+		t.Fatalf("draft document = %+v", document)
+	}
+	for index, expected := range []struct {
+		commit string
+		base   string
+	}{{first, firstParent}, {second, first}} {
+		comparison := document.Comparisons[index]
+		if comparison.Commit != expected.commit || comparison.Head != expected.commit || comparison.Base != expected.base {
+			t.Fatalf("comparison %d = %+v", index, comparison)
+		}
+		if len(comparison.Notes) != 2 || comparison.Notes[0].Session != "review-12" ||
+			comparison.Notes[0].Anchor.Head != expected.commit || comparison.Notes[0].Anchor.Base != expected.base ||
+			comparison.Notes[0].Anchor.Context == "" {
+			t.Fatalf("comparison %d drafts = %+v", index, comparison.Notes)
+		}
+	}
+	requestData, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lastRequest provider.Request
+	if err := json.Unmarshal(requestData, &lastRequest); err != nil {
+		t.Fatal(err)
+	}
+	if lastRequest.Action != provider.ActionNotesGenerate || lastRequest.Head != second || lastRequest.From != first {
+		t.Fatalf("last provider request = %+v", lastRequest)
+	}
+}
+
+func TestNoteGenerateReportsEveryCommitWhenAWriteFails(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "one\nroot\n"})
+	commitFile := func(contents, message string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, arguments := range [][]string{{"add", "main.go"}, {"commit", "--quiet", "-m", message}} {
+			command := exec.Command("git", arguments...)
+			command.Dir = repository
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", arguments, err, output)
+			}
+		}
+		oid, err := noteGitOutput(repository, "rev-parse", "HEAD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return oid
+	}
+	first := commitFile("one\nfirst\n", "first")
+	second := commitFile("one\nsecond\n", "second")
+	third := commitFile("one\nthird\n", "third")
+
+	providers := t.TempDir()
+	requestLog := filepath.Join(t.TempDir(), "requests.jsonl")
+	failureMarker := filepath.Join(t.TempDir(), "failed-once")
+	manifest := fmt.Sprintf(`version: provider/v1
+name: fake
+description: generator and writer with one injected failure
+command: [%q, %q, %q, %q, %q, %q]
+actions:
+  changes.notes.generate:
+    description: generate notes
+  changes.notes.create:
+    description: create notes
+`, os.Args[0], "-test.run=TestFakeNoteProviderProcess", "--", requestLog, second, failureMarker)
+	if err := os.WriteFile(filepath.Join(providers, "sequenced.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "changes.yaml")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("providers:\n  directory: %q\n", providers)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	arguments := []string{
+		"note", "generate", "--config", config, "--provider", "fake", "--store", "fake",
+		"--commit", first, "--commit", second, "--commit", third, "--json",
+	}
+
+	stdout, stderr, err := runNoteCLIWithStreams(t, repository, arguments...)
+	if err == nil {
+		t.Fatalf("write failure exited successfully:\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+	var failed noteWriteDocument
+	if decodeErr := json.Unmarshal([]byte(stdout), &failed); decodeErr != nil {
+		t.Fatalf("decode write results: %v\nstdout: %s\nstderr: %s", decodeErr, stdout, stderr)
+	}
+	assertNoteWriteStatuses(t, failed, []string{first, second, third}, []string{
+		noteWriteSuccess, noteWriteFailure, noteWriteUnattempted,
+	})
+	if len(failed.Comparisons[0].Notes) != 2 || failed.Comparisons[1].Error == "" ||
+		!strings.Contains(failed.Comparisons[2].Error, "not attempted") {
+		t.Fatalf("partial write results = %+v", failed.Comparisons)
+	}
+	if !strings.Contains(stderr, second) || !strings.Contains(stderr, "injected write failure") {
+		t.Fatalf("write failure diagnostic did not identify commit %s:\n%s", second, stderr)
+	}
+	requests := readNoteProviderRequests(t, requestLog)
+	assertNoteCreateAttempts(t, requests, map[string]int{first: 1, second: 1, third: 0})
+	firstKeys := noteRequestKeys(t, requests, first)
+
+	stdout, stderr, err = runNoteCLIWithStreams(t, repository, arguments...)
+	if err != nil {
+		t.Fatalf("idempotent retry: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+	var retried noteWriteDocument
+	if decodeErr := json.Unmarshal([]byte(stdout), &retried); decodeErr != nil {
+		t.Fatalf("decode retry results: %v\n%s", decodeErr, stdout)
+	}
+	assertNoteWriteStatuses(t, retried, []string{first, second, third}, []string{
+		noteWriteSuccess, noteWriteSuccess, noteWriteSuccess,
+	})
+	requests = readNoteProviderRequests(t, requestLog)
+	assertNoteCreateAttempts(t, requests, map[string]int{first: 2, second: 2, third: 1})
+	if retryKeys := noteRequestKeys(t, requests, first); retryKeys != firstKeys {
+		t.Fatalf("retry changed the first commit note keys: %s then %s", firstKeys, retryKeys)
+	}
+}
+
+func TestNoteWriteTextIdentifiesEachCommitOutcome(t *testing.T) {
+	commits := []string{strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)}
+	outcomes := []noteWriteOutcome{
+		{
+			batch: noteGeneratedComparison{snapshot: noteSnapshot{head: commits[0]}}, status: noteWriteSuccess,
+			notes: []provider.Note{{ID: "stored", Anchor: provider.NoteAnchor{Path: "main.go", Line: 2}}},
+		},
+		{
+			batch: noteGeneratedComparison{snapshot: noteSnapshot{head: commits[1]}}, status: noteWriteFailure,
+			err: fmt.Errorf("store refused the batch"),
+		},
+		{
+			batch: noteGeneratedComparison{snapshot: noteSnapshot{head: commits[2]}}, status: noteWriteUnattempted,
+			err: fmt.Errorf("not attempted after an earlier commit write failed"),
+		},
+	}
+	var output bytes.Buffer
+	if err := printNoteWriteOutcomes(&output, outcomes, false); err != nil {
+		t.Fatal(err)
+	}
+	for index, status := range []string{noteWriteSuccess, noteWriteFailure, noteWriteUnattempted} {
+		if !strings.Contains(output.String(), commits[index]) || !strings.Contains(output.String(), status) {
+			t.Fatalf("text results omitted %s %s:\n%s", commits[index], status, output.String())
+		}
+	}
+}
+
+func assertNoteWriteStatuses(t *testing.T, document noteWriteDocument, commits, statuses []string) {
+	t.Helper()
+	if document.Version != "changes.note-write-results/v1" || len(document.Comparisons) != len(commits) {
+		t.Fatalf("write document = %+v", document)
+	}
+	for index := range commits {
+		comparison := document.Comparisons[index]
+		if comparison.Commit != commits[index] || comparison.Head != commits[index] || comparison.Status != statuses[index] {
+			t.Fatalf("comparison %d = %+v", index, comparison)
+		}
+	}
+}
+
+func runNoteCLIWithStreams(t *testing.T, directory string, arguments ...string) (string, string, error) {
+	t.Helper()
+	command := noteCLICommand(t, directory, arguments...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+func readNoteProviderRequests(t *testing.T, path string) []provider.Request {
+	t.Helper()
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(payload), []byte("\n"))
+	requests := make([]provider.Request, 0, len(lines))
+	for _, line := range lines {
+		var request provider.Request
+		if err := json.Unmarshal(line, &request); err != nil {
+			t.Fatalf("decode provider request: %v\n%s", err, line)
+		}
+		requests = append(requests, request)
+	}
+	return requests
+}
+
+func assertNoteCreateAttempts(t *testing.T, requests []provider.Request, expected map[string]int) {
+	t.Helper()
+	actual := map[string]int{}
+	for _, request := range requests {
+		if request.Action == provider.ActionNotesCreate {
+			actual[request.Head]++
+		}
+	}
+	for commit, count := range expected {
+		if actual[commit] != count {
+			t.Fatalf("create attempts for %s = %d, want %d; all attempts = %#v", commit, actual[commit], count, actual)
+		}
+	}
+}
+
+func noteRequestKeys(t *testing.T, requests []provider.Request, head string) string {
+	t.Helper()
+	var first string
+	for _, request := range requests {
+		if request.Action != provider.ActionNotesCreate || request.Head != head {
+			continue
+		}
+		payload, err := json.Marshal(request.Notes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first == "" {
+			first = string(payload)
+			continue
+		}
+		if string(payload) != first {
+			t.Fatalf("note keys changed for %s: %s then %s", head, first, payload)
+		}
+	}
+	return first
+}
+
+func TestNoteGenerateDraftFlagValidationAndComparisonExclusivity(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "one\ntwo\n"})
+	if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte("one\nchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := noteCLICommand(t, repository, "note", "generate", "--draft").CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "--draft requires --json") {
+		t.Fatalf("draft without JSON = %v\n%s", err, output)
+	}
+	output, err = noteCLICommand(
+		t, repository, "note", "generate", "--commit", "HEAD", "--commit", "HEAD~1", "--from", "HEAD~2",
+	).CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "--commit cannot be combined") {
+		t.Fatalf("mixed comparisons = %v\n%s", err, output)
+	}
+}
+
+func TestNoteGenerateAcceptsRootCommitAsEmptyTreeComparison(t *testing.T) {
+	repository := t.TempDir()
+	prepareRepository(t, repository, map[string]string{"main.go": "one\ntwo\n"})
+	specs, err := noteGenerationSpecs(repository, noteComparisonFlags{}, noteCommitFlags{"HEAD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(specs) != 1 || specs[0].spec.From == "" || specs[0].spec.To == "" {
+		t.Fatalf("root comparison = %+v", specs)
+	}
+	patch, err := specs[0].spec.NoteDiff()
+	if err != nil || !strings.Contains(patch, "main.go") {
+		t.Fatalf("root comparison patch = %q, %v", patch, err)
+	}
+}
+
 func TestFilteredRenderUsesFullNoteIdentityAndFilteredPlacement(t *testing.T) {
 	repository := t.TempDir()
 	prepareRepository(t, repository, map[string]string{"main.go": "one\nold main\n", "other.go": "one\nold other\n"})
@@ -1123,6 +1439,30 @@ func TestNoteProviderCompletionUsesConfigAndAction(t *testing.T) {
 	}
 }
 
+func TestNoteGenerateMetadataPublishesDraftAndRepeatableCommitFlags(t *testing.T) {
+	metadata := subcommandMetadata("note", "generate")
+	flags := map[string]completion.Flag{}
+	for _, configured := range metadata.Flags {
+		flags[configured.Name] = configured
+	}
+	if _, ok := flags["draft"]; !ok {
+		t.Fatal("note generate metadata omits --draft")
+	}
+	commit, ok := flags["commit"]
+	if !ok || !strings.Contains(commit.Description, "repeat") {
+		t.Fatalf("note generate --commit metadata = %+v", commit)
+	}
+	for _, shell := range []string{"bash", "zsh", "fish", "nu"} {
+		generated, err := completion.Generate(shell, completionGeneratorMetadata())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(generated, "draft") {
+			t.Fatalf("%s completion omits --draft", shell)
+		}
+	}
+}
+
 func TestFakeNoteProviderProcess(t *testing.T) {
 	separator := -1
 	for index, argument := range os.Args {
@@ -1142,7 +1482,31 @@ func TestFakeNoteProviderProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(os.Args[separator+1], payload, 0o600); err != nil {
+	capture := os.Args[separator+1]
+	if separator+3 < len(os.Args) {
+		file, openErr := os.OpenFile(capture, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		if _, writeErr := file.Write(append(payload, '\n')); writeErr != nil {
+			_ = file.Close()
+			t.Fatal(writeErr)
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		failHead := os.Args[separator+2]
+		failureMarker := os.Args[separator+3]
+		if request.Action == provider.ActionNotesCreate && request.Head == failHead {
+			if _, statErr := os.Stat(failureMarker); os.IsNotExist(statErr) {
+				if markerErr := os.WriteFile(failureMarker, []byte("failed\n"), 0o600); markerErr != nil {
+					t.Fatal(markerErr)
+				}
+				fmt.Fprintln(os.Stderr, "injected write failure")
+				os.Exit(7)
+			}
+		}
+	} else if err := os.WriteFile(capture, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	note := provider.Note{

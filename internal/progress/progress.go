@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/term"
+	sharedterminal "github.com/roshbhatia/go-utils/terminal"
 )
 
 type Indicator struct {
@@ -19,7 +19,7 @@ type Indicator struct {
 func Start(output io.Writer, label string, enabled bool) *Indicator {
 	indicator := &Indicator{stop: make(chan struct{}), done: make(chan struct{})}
 	file, terminal := output.(*os.File)
-	if !enabled || !terminal || !term.IsTerminal(int(file.Fd())) {
+	if !enabled || !terminal || !sharedterminal.IsTTY(file) {
 		close(indicator.done)
 		return indicator
 	}

@@ -165,12 +165,15 @@ generation are never cached. Watch mode polls readers at
 all provider analysis for the rendered comparison.
 
 `changes interactive` opens the cohesive diff tree in an alternate screen. Its
-Files and History tabs share a navigator. Press `t` for tree or list, `d` for a
-left or bottom dock, `s` for unified or side-by-side diff, and `v` to switch
-working, staged, and first-parent commit views. Press `:` for the command
-palette. Press `a` to use `interactive.noteInput`, or use `n` for the popup and
-`e` for `$EDITOR`. Changes saves layout and exact selection under
-`XDG_STATE_HOME`. It keeps replaceable snapshots under `XDG_CACHE_HOME`.
+Files and History tabs share a navigator. Use `Ctrl-h/j/k/l` to move between
+panes. `Tab` and `Shift-Tab` stay inside the focused pane and switch its tabs.
+Click a pane, tab, or visible row to focus or select it. The mouse wheel scrolls
+the pane under the pointer. Press `t` for tree or list, `d` for a left or bottom
+dock, `s` for unified or side-by-side diff, and `v` to switch working, staged,
+and first-parent commit views. Press `:` for the command palette. Press `a` to
+use `interactive.noteInput`, or use `n` for the popup and `e` for `$EDITOR`.
+Changes saves layout and exact selection under `XDG_STATE_HOME`. It keeps
+replaceable snapshots under `XDG_CACHE_HOME`.
 
 `changes workspace` emits `changes.workspace/v1` JSON for external clients.
 The snapshot contains the repository and comparison identity, freshness,
@@ -184,11 +187,29 @@ is a terminal. `--quiet` disables it. Standard output stays safe for pipes and
 JSON consumers.
 
 `changes.notes.create` accepts either one `note` or one atomic `notes` batch.
-`changes note generate` writes every generated note as one batch and uses the
-generator note ID as its idempotency key. A generator must return the same ID
-for the same semantic note on an equivalent request. A store retry must return
-the existing note for the same key and payload, and must reject a changed
-payload for that key.
+In History, press Space to mark separate commits, then press `g` to generate
+drafts for each commit's first-parent comparison. Review every draft before the
+writer runs: `j/k` moves, Space includes or excludes, `e` edits, Enter saves the
+included drafts, and Escape cancels without a write.
+
+The same flow is scriptable. Repeat `--commit` to keep each comparison separate.
+Add `--draft --json` to emit validated drafts without discovering or invoking a
+writer:
+
+```bash
+changes note generate \
+  --provider codex-review \
+  --commit HEAD~1 \
+  --commit HEAD \
+  --draft \
+  --json | jq '.comparisons[] | {commit, notes}'
+```
+
+Without `--draft`, `changes note generate` preserves its write behavior and
+writes one atomic batch per comparison. It uses the generator note ID as its
+idempotency key. A generator must return the same ID for the same semantic note
+on an equivalent request. A store retry must return the existing note for the
+same key and payload, and must reject a changed payload for that key.
 Provider requests and responses are each limited to 16 MiB. Input patches are
 limited to 64 MiB.
 
@@ -367,8 +388,9 @@ Generate notes with a provider and save them
 
 | Option | Description |
 | --- | --- |
-| `--commit` `<value>` | First-parent commit comparison |
+| `--commit` `<value>` | First-parent commit comparison; repeat for several commits |
 | `--config` `<value>` | YAML configuration file |
+| `--draft` | Return validated drafts without writing; requires --json |
 | `--from` `<value>` | Left revision |
 | `--json` | Print generated notes as JSON |
 | `--provider` `<value>` | Note generator provider |

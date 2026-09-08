@@ -24,6 +24,7 @@ import (
 	"github.com/roshbhatia/changes/internal/appconfig"
 	"github.com/roshbhatia/changes/internal/provider"
 	"github.com/roshbhatia/changes/internal/source"
+	"github.com/roshbhatia/go-utils/cell"
 	"github.com/roshbhatia/go-utils/completion"
 	gitutil "github.com/roshbhatia/go-utils/git"
 )
@@ -37,6 +38,47 @@ type noteDocument struct {
 	Version string          `json:"version"`
 	Notes   []provider.Note `json:"notes"`
 }
+
+type noteDraftDocument struct {
+	Version     string                    `json:"version"`
+	Comparisons []noteDraftComparisonJSON `json:"comparisons"`
+}
+
+type noteDraftComparisonJSON struct {
+	Commit      string               `json:"commit,omitempty"`
+	Base        string               `json:"base"`
+	Head        string               `json:"head"`
+	Files       []string             `json:"files"`
+	Fingerprint string               `json:"fingerprint"`
+	Notes       []provider.NoteDraft `json:"notes"`
+}
+
+type noteWriteDocument struct {
+	Version     string                    `json:"version"`
+	Comparisons []noteWriteComparisonJSON `json:"comparisons"`
+}
+
+type noteWriteComparisonJSON struct {
+	Commit string          `json:"commit"`
+	Base   string          `json:"base"`
+	Head   string          `json:"head"`
+	Status string          `json:"status"`
+	Notes  []provider.Note `json:"notes"`
+	Error  string          `json:"error,omitempty"`
+}
+
+type noteWriteOutcome struct {
+	batch  noteGeneratedComparison
+	status string
+	notes  []provider.Note
+	err    error
+}
+
+const (
+	noteWriteSuccess     = "success"
+	noteWriteFailure     = "failure"
+	noteWriteUnattempted = "unattempted"
+)
 
 type noteComparisonFlags struct {
 	commit string
@@ -74,7 +116,11 @@ func runNoteGenerate(args []string) {
 	storeName := flags.String("store", "", flagDescription(metadata, "store"))
 	session := flags.String("session", "", flagDescription(metadata, "session"))
 	asJSON := flags.Bool("json", false, flagDescription(metadata, "json"))
-	comparison := addNoteComparisonFlags(flags, metadata)
+	draftOnly := flags.Bool("draft", false, flagDescription(metadata, "draft"))
+	commits := &noteCommitFlags{}
+	flags.Var(commits, "commit", flagDescription(metadata, "commit"))
+	comparison := &noteComparisonFlags{}
+	addNoteRangeFlags(flags, metadata, comparison)
 	flags.Usage = func() {
 		printCommandHelp(flags.Output(), "changes note generate [flags]", metadata, flags)
 	}
@@ -87,6 +133,12 @@ func runNoteGenerate(args []string) {
 	if flags.NArg() != 0 {
 		fail(errors.New("note generate accepts only flags"))
 	}
+	if *draftOnly && !*asJSON {
+		fail(errors.New("--draft requires --json"))
+	}
+	if len(*commits) > 0 && (comparison.from != "" || comparison.to != "" || comparison.staged) {
+		fail(errors.New("--commit cannot be combined with --from, --to, or --staged"))
+	}
 	configured, err := appconfig.Load(*configPath)
 	if err != nil {
 		fail(err)
@@ -98,19 +150,31 @@ func runNoteGenerate(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	spec, _, err := noteSpec(cwd, "", *comparison)
+	specs, err := noteGenerationSpecs(cwd, *comparison, *commits)
 	if err != nil {
 		fail(err)
 	}
-	snapshot, err := stableNoteSnapshot(spec)
-	if err != nil {
-		fail(err)
-	}
-	if len(snapshot.files) == 0 {
-		if *asJSON {
-			fmt.Println(`{"version":"changes.notes/v1","notes":[]}`)
+	if len(specs) == 1 {
+		snapshot, snapshotErr := stableNoteSnapshot(specs[0].spec)
+		if snapshotErr != nil {
+			fail(snapshotErr)
 		}
-		return
+		if len(snapshot.files) == 0 {
+			if *draftOnly {
+				batch := noteGeneratedComparison{
+					commit: specs[0].commit, spec: specs[0].spec, snapshot: snapshot,
+					drafts: []provider.NoteDraft{},
+				}
+				data, marshalErr := json.Marshal(noteDraftOutput([]noteGeneratedComparison{batch}))
+				if marshalErr != nil {
+					fail(marshalErr)
+				}
+				fmt.Println(string(data))
+			} else if *asJSON {
+				fmt.Println(`{"version":"changes.notes/v1","notes":[]}`)
+			}
+			return
+		}
 	}
 	discovery, err := provider.Discover(configured.Providers.Directory)
 	if err != nil {
@@ -120,88 +184,335 @@ func runNoteGenerate(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	writers, err := selectOneNoteProvider(discovery.Providers, provider.ActionNotesCreate, *storeName, "store", "store")
-	if err != nil {
-		fail(err)
-	}
-	request := noteRequestWithIDs(spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head)
-	request.Patch = snapshot.placementPatch
-	ctx, cancel := context.WithTimeout(context.Background(), configured.Notes.GeneratorTimeout.Duration())
-	response, err := provider.Run(ctx, generators[0], provider.ActionNotesGenerate, request, provider.CachePolicy{})
-	cancel()
-	if err != nil {
-		fail(err)
-	}
-	allowed := make(map[string]bool, len(snapshot.files))
-	for _, path := range snapshot.files {
-		allowed[filepath.ToSlash(filepath.Clean(path))] = true
-	}
-	for index := range response.Notes {
-		note := &response.Notes[index]
-		if !allowed[note.Anchor.Path] {
-			fail(fmt.Errorf("provider %s generated a note for unchanged path %q", generators[0].Manifest.Name, note.Anchor.Path))
-		}
-		if err := validateNoteVisibility(snapshot.placementPatch, note); err != nil {
-			fail(fmt.Errorf("provider %s: %w", generators[0].Manifest.Name, err))
-		}
-		if note.Placement.Quality != provider.PlacementExact {
-			fail(fmt.Errorf("provider %s generated note %q without an exact placement", generators[0].Manifest.Name, note.ID))
-		}
-		contextLine, err := noteRangeInFilePatch(
-			snapshot.placementPatch, note.Anchor.Path, note.Anchor.Side, note.Anchor.StartLine, note.Anchor.Line,
+	var writer provider.LoadedManifest
+	if !*draftOnly {
+		writers, selectErr := selectOneNoteProvider(
+			discovery.Providers, provider.ActionNotesCreate, *storeName, "store", "store",
 		)
-		if err != nil {
-			fail(fmt.Errorf("provider %s: %w", generators[0].Manifest.Name, err))
+		if selectErr != nil {
+			fail(selectErr)
 		}
-		note.Anchor.Context = contextLine
+		writer = writers[0]
 	}
-	after, err := stableNoteSnapshot(spec)
-	if err != nil {
-		fail(err)
-	}
-	if after.patch != snapshot.patch || after.placementPatch != snapshot.placementPatch ||
-		after.base != snapshot.base || after.head != snapshot.head ||
-		!slices.Equal(after.files, snapshot.files) {
-		fail(errors.New("selected comparison changed while generating notes"))
-	}
-	drafts := make([]provider.NoteDraft, 0, len(response.Notes))
-	for _, generated := range response.Notes {
-		provenance := generated.Provenance
-		if provenance.SessionID == "" {
-			provenance.SessionID = *session
+	batches := make([]noteGeneratedComparison, 0, len(specs))
+	for _, selected := range specs {
+		batch, generateErr := generateNoteComparison(
+			context.Background(), selected.commit, selected.spec, *session,
+			generators[0], configured.Notes.GeneratorTimeout.Duration(),
+		)
+		if generateErr != nil {
+			fail(generateErr)
 		}
-		if provenance.WorkingDirectory == "" {
-			provenance.WorkingDirectory = spec.Dir
-		}
-		drafts = append(drafts, provider.NoteDraft{
-			Key:     generated.ID,
-			Summary: generated.Summary, Rationale: generated.Rationale, Author: generated.Author,
-			Origin: provider.NoteOriginAgent, Session: *session, Provenance: provenance, Anchor: generated.Anchor,
-		})
+		batches = append(batches, batch)
 	}
-	created := []provider.Note{}
-	if len(drafts) > 0 {
-		writeRequest := noteRequestWithIDs(spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head)
-		writeRequest.Notes = drafts
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(configured.Providers.Timeout))
-		written, writeErr := provider.Run(ctx, writers[0], provider.ActionNotesCreate, writeRequest, provider.CachePolicy{})
-		cancel()
+	if *draftOnly {
+		data, marshalErr := json.Marshal(noteDraftOutput(batches))
+		if marshalErr != nil {
+			fail(marshalErr)
+		}
+		fmt.Println(string(data))
+		return
+	}
+	if len(batches) == 1 {
+		written, writeErr := writeNoteComparison(
+			context.Background(), batches[0], writer, time.Duration(configured.Providers.Timeout),
+		)
 		if writeErr != nil {
 			fail(writeErr)
 		}
-		created = written.Notes
+		printCreatedNotes(written, *asJSON)
+		return
 	}
-	if *asJSON {
-		data, err := json.Marshal(noteDocument{Version: "changes.notes/v1", Notes: created})
+	outcomes, writeErr := writeNoteComparisons(
+		context.Background(), batches, writer, time.Duration(configured.Providers.Timeout),
+	)
+	if renderErr := printNoteWriteOutcomes(os.Stdout, outcomes, *asJSON); renderErr != nil {
+		fail(renderErr)
+	}
+	if writeErr != nil {
+		fail(writeErr)
+	}
+}
+
+func printCreatedNotes(notes []provider.Note, asJSON bool) {
+	if asJSON {
+		data, err := json.Marshal(noteDocument{Version: "changes.notes/v1", Notes: notes})
 		if err != nil {
 			fail(err)
 		}
 		fmt.Println(string(data))
 		return
 	}
-	for _, note := range created {
+	for _, note := range notes {
 		fmt.Printf("note: %s %s\n", cleanNoteOneLine(note.ID), noteLocation(note))
 	}
+}
+
+func writeNoteComparisons(
+	ctx context.Context,
+	batches []noteGeneratedComparison,
+	writer provider.LoadedManifest,
+	timeout time.Duration,
+) ([]noteWriteOutcome, error) {
+	outcomes := make([]noteWriteOutcome, 0, len(batches))
+	var writeFailure error
+	for _, batch := range batches {
+		if writeFailure != nil {
+			outcomes = append(outcomes, noteWriteOutcome{
+				batch: batch, status: noteWriteUnattempted,
+				err: errors.New("not attempted after an earlier commit write failed"),
+			})
+			continue
+		}
+		notes, err := writeNoteComparison(ctx, batch, writer, timeout)
+		if err != nil {
+			writeFailure = fmt.Errorf("write notes for commit %s: %w", noteBatchCommit(batch), err)
+			outcomes = append(outcomes, noteWriteOutcome{batch: batch, status: noteWriteFailure, err: err})
+			continue
+		}
+		outcomes = append(outcomes, noteWriteOutcome{
+			batch: batch, status: noteWriteSuccess, notes: notes,
+		})
+	}
+	return outcomes, writeFailure
+}
+
+func printNoteWriteOutcomes(output io.Writer, outcomes []noteWriteOutcome, asJSON bool) error {
+	if asJSON {
+		comparisons := make([]noteWriteComparisonJSON, 0, len(outcomes))
+		for _, outcome := range outcomes {
+			result := noteWriteComparisonJSON{
+				Commit: noteBatchCommit(outcome.batch),
+				Base:   outcome.batch.snapshot.base,
+				Head:   outcome.batch.snapshot.head,
+				Status: outcome.status,
+				Notes:  outcome.notes,
+			}
+			if result.Notes == nil {
+				result.Notes = []provider.Note{}
+			}
+			if outcome.err != nil {
+				result.Error = outcome.err.Error()
+			}
+			comparisons = append(comparisons, result)
+		}
+		data, err := json.Marshal(noteWriteDocument{
+			Version: "changes.note-write-results/v1", Comparisons: comparisons,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(output, string(data))
+		return err
+	}
+	for _, outcome := range outcomes {
+		commit := noteBatchCommit(outcome.batch)
+		switch outcome.status {
+		case noteWriteSuccess:
+			if _, err := fmt.Fprintf(output, "commit %s: success (%d note(s))\n", commit, len(outcome.notes)); err != nil {
+				return err
+			}
+			for _, note := range outcome.notes {
+				if _, err := fmt.Fprintf(output, "  note: %s %s\n", cleanNoteOneLine(note.ID), noteLocation(note)); err != nil {
+					return err
+				}
+			}
+		case noteWriteFailure, noteWriteUnattempted:
+			if _, err := fmt.Fprintf(output, "commit %s: %s: %v\n", commit, outcome.status, outcome.err); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unknown note write status %q", outcome.status)
+		}
+	}
+	return nil
+}
+
+func noteBatchCommit(batch noteGeneratedComparison) string {
+	if batch.snapshot.head != "" {
+		return batch.snapshot.head
+	}
+	if batch.commit != "" {
+		return batch.commit
+	}
+	return "working-tree"
+}
+
+type noteCommitFlags []string
+
+func (values *noteCommitFlags) String() string {
+	return strings.Join(*values, ",")
+}
+
+func (values *noteCommitFlags) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("--commit requires a revision")
+	}
+	*values = append(*values, value)
+	return nil
+}
+
+type noteGenerationSpec struct {
+	commit string
+	spec   source.Spec
+}
+
+func noteGenerationSpecs(cwd string, comparison noteComparisonFlags, commits noteCommitFlags) ([]noteGenerationSpec, error) {
+	if len(commits) == 0 {
+		spec, _, err := noteSpec(cwd, "", comparison)
+		return []noteGenerationSpec{{spec: spec}}, err
+	}
+	selected := make([]noteGenerationSpec, 0, len(commits))
+	for _, commit := range commits {
+		spec, _, err := noteSpec(cwd, "", noteComparisonFlags{commit: commit})
+		if err != nil {
+			return nil, err
+		}
+		selected = append(selected, noteGenerationSpec{commit: commit, spec: spec})
+	}
+	return selected, nil
+}
+
+type noteGeneratedComparison struct {
+	commit   string
+	spec     source.Spec
+	snapshot noteSnapshot
+	drafts   []provider.NoteDraft
+}
+
+func generateNoteComparison(
+	ctx context.Context,
+	commit string,
+	spec source.Spec,
+	session string,
+	generator provider.LoadedManifest,
+	timeout time.Duration,
+) (noteGeneratedComparison, error) {
+	snapshot, err := stableNoteSnapshot(spec)
+	if err != nil {
+		return noteGeneratedComparison{}, err
+	}
+	batch := noteGeneratedComparison{commit: commit, spec: spec, snapshot: snapshot, drafts: []provider.NoteDraft{}}
+	if len(snapshot.files) == 0 {
+		return batch, nil
+	}
+	request := noteRequestWithIDs(spec, snapshot.files, snapshot.patch, snapshot.base, snapshot.head)
+	request.Patch = snapshot.placementPatch
+	providerContext, cancel := context.WithTimeout(ctx, timeout)
+	response, err := provider.Run(providerContext, generator, provider.ActionNotesGenerate, request, provider.CachePolicy{})
+	cancel()
+	if err != nil {
+		return noteGeneratedComparison{}, err
+	}
+	drafts, err := validateGeneratedNotes(generator.Manifest.Name, spec, snapshot, response.Notes, session)
+	if err != nil {
+		return noteGeneratedComparison{}, err
+	}
+	if err := verifyNoteSnapshot(spec, snapshot, "generating notes"); err != nil {
+		return noteGeneratedComparison{}, err
+	}
+	batch.drafts = drafts
+	return batch, nil
+}
+
+func validateGeneratedNotes(
+	providerName string,
+	spec source.Spec,
+	snapshot noteSnapshot,
+	notes []provider.Note,
+	session string,
+) ([]provider.NoteDraft, error) {
+	allowed := make(map[string]bool, len(snapshot.files))
+	for _, path := range snapshot.files {
+		allowed[filepath.ToSlash(filepath.Clean(path))] = true
+	}
+	drafts := make([]provider.NoteDraft, 0, len(notes))
+	for index := range notes {
+		note := &notes[index]
+		if !allowed[filepath.ToSlash(filepath.Clean(note.Anchor.Path))] {
+			return nil, fmt.Errorf("provider %s generated a note for unchanged path %q", providerName, note.Anchor.Path)
+		}
+		if err := validateNoteVisibility(snapshot.placementPatch, note); err != nil {
+			return nil, fmt.Errorf("provider %s: %w", providerName, err)
+		}
+		if note.Placement.Quality != provider.PlacementExact {
+			return nil, fmt.Errorf("provider %s generated note %q without an exact placement", providerName, note.ID)
+		}
+		contextLine, err := noteRangeInFilePatch(
+			snapshot.placementPatch, note.Anchor.Path, note.Anchor.Side, note.Anchor.StartLine, note.Anchor.Line,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("provider %s: %w", providerName, err)
+		}
+		note.Anchor.Context = contextLine
+		provenance := note.Provenance
+		if provenance.SessionID == "" {
+			provenance.SessionID = session
+		}
+		if provenance.WorkingDirectory == "" {
+			provenance.WorkingDirectory = spec.Dir
+		}
+		drafts = append(drafts, provider.NoteDraft{
+			Key: note.ID, Summary: note.Summary, Rationale: note.Rationale, Author: note.Author,
+			Origin: provider.NoteOriginAgent, Session: session, Provenance: provenance, Anchor: note.Anchor,
+		})
+	}
+	return drafts, nil
+}
+
+func verifyNoteSnapshot(spec source.Spec, before noteSnapshot, operation string) error {
+	after, err := stableNoteSnapshot(spec)
+	if err != nil {
+		return err
+	}
+	if after.patch != before.patch || after.placementPatch != before.placementPatch ||
+		after.base != before.base || after.head != before.head || !slices.Equal(after.files, before.files) {
+		return fmt.Errorf("selected comparison changed while %s", operation)
+	}
+	return nil
+}
+
+func writeNoteComparison(
+	ctx context.Context,
+	batch noteGeneratedComparison,
+	writer provider.LoadedManifest,
+	timeout time.Duration,
+) ([]provider.Note, error) {
+	if len(batch.drafts) == 0 {
+		return []provider.Note{}, nil
+	}
+	if err := verifyNoteSnapshot(batch.spec, batch.snapshot, "writing notes"); err != nil {
+		return nil, err
+	}
+	request := noteRequestWithIDs(
+		batch.spec, batch.snapshot.files, batch.snapshot.patch, batch.snapshot.base, batch.snapshot.head,
+	)
+	request.Notes = batch.drafts
+	providerContext, cancel := context.WithTimeout(ctx, timeout)
+	response, err := provider.Run(providerContext, writer, provider.ActionNotesCreate, request, provider.CachePolicy{})
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	return response.Notes, nil
+}
+
+func noteDraftOutput(batches []noteGeneratedComparison) noteDraftDocument {
+	comparisons := make([]noteDraftComparisonJSON, 0, len(batches))
+	for _, batch := range batches {
+		commit := ""
+		if batch.commit != "" {
+			commit = batch.snapshot.head
+		}
+		comparisons = append(comparisons, noteDraftComparisonJSON{
+			Commit: commit, Base: batch.snapshot.base, Head: batch.snapshot.head,
+			Files:       batch.snapshot.files,
+			Fingerprint: fmt.Sprintf("%x", sha256.Sum256([]byte(batch.snapshot.patch))),
+			Notes:       batch.drafts,
+		})
+	}
+	return noteDraftDocument{Version: "changes.note-drafts/v1", Comparisons: comparisons}
 }
 
 func runNoteAdd(args []string) {
@@ -424,10 +735,14 @@ func runNoteList(args []string) {
 func addNoteComparisonFlags(flags *flag.FlagSet, metadata completion.Command) *noteComparisonFlags {
 	comparison := &noteComparisonFlags{}
 	flags.StringVar(&comparison.commit, "commit", "", flagDescription(metadata, "commit"))
+	addNoteRangeFlags(flags, metadata, comparison)
+	return comparison
+}
+
+func addNoteRangeFlags(flags *flag.FlagSet, metadata completion.Command, comparison *noteComparisonFlags) {
 	flags.StringVar(&comparison.from, "from", "", flagDescription(metadata, "from"))
 	flags.StringVar(&comparison.to, "to", "", flagDescription(metadata, "to"))
 	flags.BoolVar(&comparison.staged, "staged", false, flagDescription(metadata, "staged"))
-	return comparison
 }
 
 func noteSpec(cwd, file string, flags noteComparisonFlags) (source.Spec, string, error) {
@@ -446,15 +761,11 @@ func noteSpec(cwd, file string, flags noteComparisonFlags) (source.Spec, string,
 	}
 	spec := source.Spec{Dir: root, From: flags.from, To: flags.to, Staged: flags.staged}
 	if flags.commit != "" {
-		head, err := noteGitOutput(root, "rev-parse", "--verify", flags.commit+"^{commit}")
+		resolved, err := noteCommitComparison(root, flags.commit)
 		if err != nil {
-			return source.Spec{}, "", fmt.Errorf("resolve --commit %q: %w", flags.commit, err)
+			return source.Spec{}, "", err
 		}
-		base, err := noteGitOutput(root, "rev-parse", "--verify", strings.TrimSpace(head)+"^1")
-		if err != nil {
-			return source.Spec{}, "", fmt.Errorf("--commit %q has no first parent; use --from and --to", flags.commit)
-		}
-		spec.From, spec.To = strings.TrimSpace(base), strings.TrimSpace(head)
+		spec = resolved
 	}
 	if file == "" {
 		return spec, "", nil
@@ -481,6 +792,28 @@ func noteSpec(cwd, file string, flags noteComparisonFlags) (source.Spec, string,
 	relative = filepath.ToSlash(relative)
 	spec.Paths = []string{absolute}
 	return spec, relative, nil
+}
+
+func noteCommitComparison(root, revision string) (source.Spec, error) {
+	head, err := noteGitOutput(root, "rev-parse", "--verify", revision+"^{commit}")
+	if err != nil {
+		return source.Spec{}, fmt.Errorf("resolve --commit %q: %w", revision, err)
+	}
+	parents, err := noteGitOutput(root, "show", "-s", "--format=%P", head)
+	if err != nil {
+		return source.Spec{}, fmt.Errorf("read --commit %q parents: %w", revision, err)
+	}
+	base := strings.Fields(parents)
+	if len(base) > 0 {
+		return source.Spec{Dir: root, From: base[0], To: head}, nil
+	}
+	command := noteGitCommand(root, "hash-object", "-t", "tree", "--stdin")
+	command.Stdin = strings.NewReader("")
+	output, err := command.Output()
+	if err != nil {
+		return source.Spec{}, fmt.Errorf("resolve empty tree: %w", err)
+	}
+	return source.Spec{Dir: root, From: strings.TrimSpace(string(output)), To: head}, nil
 }
 
 func noteGitEnvironment() []string {
@@ -1477,8 +1810,8 @@ func renderNoteRows(notes []provider.Note, width int) string {
 		if rationale := cleanNoteOneLine(note.Rationale); rationale != "" {
 			body += " - " + rationale
 		}
-		if width > 4 && len([]rune(body)) > width-4 {
-			body = string([]rune(body)[:width-5]) + "…"
+		if width > 4 && cell.Width(body) > width-4 {
+			body = cell.Truncate(body, width-4)
 		}
 		rows = append(rows, "  "+body)
 	}

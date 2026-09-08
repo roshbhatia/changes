@@ -418,7 +418,7 @@ _changes_complete() {
       ;;
     'note generate')
       __changes_completion_filter "$current" < <(
-        printf '%s\n' '--commit' '--config' '--from' '--json' '--provider' '--session' '--staged' '--store' '--to'
+        printf '%s\n' '--commit' '--config' '--draft' '--from' '--json' '--provider' '--session' '--staged' '--store' '--to'
       )
       ;;
     'note list')

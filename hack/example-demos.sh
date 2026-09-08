@@ -37,7 +37,12 @@ demo_fingerprint() {
       \( -name '*.go' -o -name 'package.nix' -o -name 'provider.yaml' -o -name 'package.json' -o -name 'package-lock.json' \) \
       ! -name '*_test.go' -print | LC_ALL=C sort
   } | while IFS= read -r path; do
-    sha256sum "$path"
+    if [[ $path == flake.nix ]]; then
+      versionless_hash=$(sed -E '/^[[:space:]]*version = "[^"]+";[[:space:]]*$/d' "$path" | sha256sum | cut -d ' ' -f 1)
+      printf '%s  %s\n' "$versionless_hash" "$path"
+    else
+      sha256sum "$path"
+    fi
   done | sha256sum | cut -d ' ' -f 1
 }
 
@@ -70,7 +75,24 @@ check_demo() {
   fi
 }
 
+refresh_fingerprints() {
+  local example
+  for example in "${example_names[@]}"; do
+    if ! demo_is_valid "$example"; then
+      echo "ERROR: ${example} demo is missing or invalid; regenerate it before refreshing fingerprints" >&2
+      return 1
+    fi
+    demo_fingerprint "$example" >"$repo_dir/examples/$example/.demo.sha256"
+  done
+}
+
 if [[ ${1:-} == "--check" ]]; then
+  check_demos
+  exit 0
+fi
+
+if [[ ${1:-} == "--refresh-fingerprints" ]]; then
+  refresh_fingerprints
   check_demos
   exit 0
 fi
@@ -204,6 +226,16 @@ render_demo() {
     printf '%s\n' 'func ready() bool { return true }' >"$repository/.demo/after.go"
     printf '%s\n' '.demo/' >>"$repository/.git/info/exclude"
     ;;
+  interactive-workspace)
+    git -C "$repository" add main.go
+    git -C "$repository" commit -qm 'normalize input'
+    sed -i.bak 's/return "fallback"/return "default"/' "$repository/main.go"
+    rm "$repository/main.go.bak"
+    git -C "$repository" add main.go
+    git -C "$repository" commit -qm 'name the default value'
+    sed -i.bak 's/return value/return strings.ToLower(value)/' "$repository/main.go"
+    rm "$repository/main.go.bak"
+    ;;
   github-pr-notes)
     git -C "$repository" add main.go
     git -C "$repository" commit -qm normalize
@@ -238,7 +270,7 @@ render_demo() {
     cd "$working_directory"
     export CHANGES_DIFF_ENGINE=builtin
     export CHANGES_DIFF_LAYOUT=unified
-    if [[ $example == agent-review-notes ]]; then
+    if [[ $example == agent-review-notes || $example == interactive-workspace ]]; then
       export CHANGES_CODEX_COMMAND="$repo_dir/hack/demo-codex.sh"
     else
       unset CHANGES_CODEX_COMMAND

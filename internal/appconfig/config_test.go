@@ -31,7 +31,9 @@ providers:
   timeout: 15s
 notes:
   editor: [nvim, --clean, $FILE]
+  generator: yaml-generator
   refreshInterval: 12s
+  store: yaml-store
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
@@ -39,6 +41,8 @@ notes:
 	t.Setenv("CHANGES_DIFF_LAYOUT", "side-by-side")
 	t.Setenv("CHANGES_PROVIDERS_DIRECTORY", "/tmp/environment-providers")
 	t.Setenv("CHANGES_PROVIDERS_CACHE_TTL", "45m")
+	t.Setenv("CHANGES_NOTES_GENERATOR", "environment-generator")
+	t.Setenv("CHANGES_NOTES_STORE", "environment-store")
 	configured, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -53,8 +57,9 @@ notes:
 		t.Fatalf("loaded cache config = %+v", configured.Providers)
 	}
 	if len(configured.Notes.Editor) != 3 || configured.Notes.Editor[0] != "nvim" ||
+		configured.Notes.Generator != "environment-generator" || configured.Notes.Store != "environment-store" ||
 		configured.Notes.RefreshInterval.Duration() != 12*time.Second {
-		t.Fatalf("loaded note editor = %+v", configured.Notes.Editor)
+		t.Fatalf("loaded notes config = %+v", configured.Notes)
 	}
 }
 
@@ -64,7 +69,7 @@ func TestSchemaIncludesProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`"$schema"`, `"providers"`, `"cacheMaxEntries"`, `"cacheTtl"`, `"directory"`, `"filter"`, `"difftool"`, `"notes"`, `"editor"`, `"refreshInterval"`,
+		`"$schema"`, `"providers"`, `"cacheMaxEntries"`, `"cacheTtl"`, `"directory"`, `"filter"`, `"difftool"`, `"notes"`, `"editor"`, `"generator"`, `"refreshInterval"`, `"store"`,
 	} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("schema omits %s", want)

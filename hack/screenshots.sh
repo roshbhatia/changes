@@ -149,7 +149,7 @@ printf '%s\n' \
   PATH="$full_path/bin:$PATH" \
     CHANGES_DIFF_ENGINE=builtin \
     CHANGES_DIFF_LAYOUT=unified \
-    freeze --execute "changes -color always" \
+    freeze --execute "changes -color always -quiet" \
     --output "$output_dir/changes.png" \
     --width 1100 \
     --padding 24 \

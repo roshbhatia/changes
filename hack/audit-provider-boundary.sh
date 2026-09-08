@@ -39,11 +39,18 @@ if [[ -n $provider_terms ]]; then
   fi
 fi
 
-legacy_engine='(engine|Engine).{0,40}"(git|internal|command)"|case "(git|internal|command)"|enum=(git|internal|command)'
+legacy_engine='(engine|Engine).{0,40}"(git|internal|command)"|enum=(git|internal|command)'
+found=0
 if grep -RniE --include='*.go' "$legacy_engine" \
   "$root/cmd" \
   "$root/internal/engine" \
   "$root/internal/appconfig"; then
+  found=1
+fi
+if grep -RniE --include='*.go' 'case "(git|internal|command)"' "$root/internal/engine"; then
+  found=1
+fi
+if [[ $found -ne 0 ]]; then
   echo "core source exposes an implementation-specific diff engine" >&2
   exit 1
 fi

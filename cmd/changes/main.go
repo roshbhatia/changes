@@ -28,13 +28,15 @@ import (
 
 	"github.com/roshbhatia/changes/internal/appconfig"
 	"github.com/roshbhatia/changes/internal/engine"
-	"github.com/roshbhatia/changes/internal/provider"
 	"github.com/roshbhatia/changes/internal/progress"
+	"github.com/roshbhatia/changes/internal/provider"
 	"github.com/roshbhatia/changes/internal/source"
 	"github.com/roshbhatia/changes/internal/workspaceview"
+	"github.com/roshbhatia/go-utils/cell"
 	"github.com/roshbhatia/go-utils/completion"
 	"github.com/roshbhatia/go-utils/diffview"
 	gitutil "github.com/roshbhatia/go-utils/git"
+	sharedterminal "github.com/roshbhatia/go-utils/terminal"
 	"github.com/roshbhatia/go-utils/workspace"
 )
 
@@ -675,7 +677,7 @@ func truncateTreeLabel(label string, width int) string {
 	if width < 8 {
 		width = 8
 	}
-	return ansi.Truncate(label, width, "…")
+	return cell.Truncate(label, width)
 }
 
 type noteInsertion struct {
@@ -1151,7 +1153,7 @@ func fitTreeWidth(body string, width int) string {
 	width = max(20, width)
 	lines := strings.Split(body, "\n")
 	for index := range lines {
-		lines[index] = ansi.Truncate(lines[index], width, "…")
+		lines[index] = cell.Truncate(lines[index], width)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1710,7 +1712,7 @@ func columns(width int) int {
 
 func resolveColor(value string) string {
 	if value == "auto" {
-		if term.IsTerminal(int(os.Stdout.Fd())) {
+		if sharedterminal.IsTTY(os.Stdout) {
 			return "always"
 		}
 		return "never"
@@ -2098,8 +2100,9 @@ directory. Each repository's files hang under its own name.`,
 						Name:     "generate",
 						Synopsis: "Generate notes with a provider and save them",
 						Flags: []completion.Flag{
-							{Name: "commit", Description: "First-parent commit comparison", Value: true, CompletionCommand: completionValuesInvocation("repository")},
+							{Name: "commit", Description: "First-parent commit comparison; repeat for several commits", Value: true, CompletionCommand: completionValuesInvocation("repository")},
 							{Name: "config", Description: "YAML configuration file", Value: true},
+							{Name: "draft", Description: "Return validated drafts without writing; requires --json"},
 							{Name: "from", Description: "Left revision", Value: true, CompletionCommand: completionValuesInvocation("repository")},
 							{Name: "json", Description: "Print generated notes as JSON"},
 							{Name: "provider", Description: "Note generator provider", Value: true, CompletionCommand: contextualCompletionValuesInvocation("note-generators")},

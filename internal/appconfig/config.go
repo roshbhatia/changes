@@ -31,8 +31,10 @@ type Interactive struct {
 // file through $FILE, or as its final argument when the placeholder is absent.
 type Notes struct {
 	Editor           []string             `json:"editor,omitempty" yaml:"editor"`
+	Generator        string               `json:"generator,omitempty" yaml:"generator,omitempty"`
 	GeneratorTimeout providerlib.Duration `json:"generatorTimeout,omitempty" yaml:"generatorTimeout,omitempty"`
 	RefreshInterval  providerlib.Duration `json:"refreshInterval,omitempty" yaml:"refreshInterval,omitempty"`
+	Store            string               `json:"store,omitempty" yaml:"store,omitempty"`
 }
 
 // Providers controls external provider discovery and execution.

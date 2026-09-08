@@ -21,6 +21,7 @@ import (
 	"github.com/roshbhatia/changes/internal/source"
 	"github.com/roshbhatia/go-utils/diffview"
 	providerlib "github.com/roshbhatia/go-utils/provider"
+	"github.com/roshbhatia/go-utils/xdg"
 )
 
 const (
@@ -294,24 +295,16 @@ func searchDirectories(explicit string) ([]string, error) {
 	if strings.TrimSpace(explicit) != "" {
 		directories = append(directories, filepath.Clean(explicit))
 	} else {
-		root := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
-		if root == "" || !filepath.IsAbs(root) {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, fmt.Errorf("find provider config directory: %w", err)
-			}
-			root = filepath.Join(home, ".config")
+		root, err := xdg.ConfigHome()
+		if err != nil {
+			return nil, fmt.Errorf("find provider config directory: %w", err)
 		}
 		directories = append(directories, filepath.Join(root, "changes", "providers"))
 	}
 
-	dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
-	if dataHome == "" || !filepath.IsAbs(dataHome) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("find provider data directory: %w", err)
-		}
-		dataHome = filepath.Join(home, ".local", "share")
+	dataHome, err := xdg.DataHome()
+	if err != nil {
+		return nil, fmt.Errorf("find provider data directory: %w", err)
 	}
 	directories = append(directories, filepath.Join(dataHome, "changes", "providers"))
 
@@ -685,15 +678,7 @@ func resultPath(prepared preparedExecution, action string, payload []byte) (stri
 }
 
 func providerCacheRoot() (string, error) {
-	root := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME"))
-	if root == "" {
-		var err error
-		root, err = os.UserCacheDir()
-		if err != nil {
-			return "", err
-		}
-	}
-	return filepath.Abs(root)
+	return xdg.CacheHome()
 }
 
 func validateCachePath(path string) error {

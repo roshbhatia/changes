@@ -114,8 +114,9 @@ export extern "changes note add" [
 ]
 
 export extern "changes note generate" [
-  --commit: string@"__changes_completion_values_25" # First-parent commit comparison
+  --commit: string@"__changes_completion_values_25" # First-parent commit comparison; repeat for several commits
   --config: string # YAML configuration file
+  --draft # Return validated drafts without writing; requires --json
   --from: string@"__changes_completion_values_26" # Left revision
   --json # Print generated notes as JSON
   --provider: string@"__changes_completion_values_27" # Note generator provider

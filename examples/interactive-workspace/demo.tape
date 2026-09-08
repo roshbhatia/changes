@@ -11,16 +11,41 @@ Set TypingSpeed 25ms
 
 Sleep 1s
 
-Type "changes interactive --no-notes --no-symbols --no-calls --no-groups --quiet"
+Type "changes interactive --no-symbols --no-calls --no-groups --quiet"
 Enter
 Wait+Screen /changes/
 Sleep 2s
-Type "f"
+
+Ctrl+H
+Tab
+Wait+Screen /name the default value/
+Sleep 1s
+Space
+Type "j"
+Space
+Sleep 2s
+
+Type "g"
+Wait+Screen /enter save/
+Sleep 3s
+Type "j"
+Space
+Sleep 2s
+Enter
+Wait+Screen /Write results/
+Sleep 3s
+Enter
+Sleep 2s
+
+Ctrl+L
+Sleep 1s
+Ctrl+H
+Shift+Tab
 Sleep 2s
 Type "d"
 Sleep 2s
-Type ":"
-Type "layout side-by-side"
-Enter
+Type "?"
+Wait+Screen /click \/ wheel/
 Sleep 3s
+Escape
 Type "q"

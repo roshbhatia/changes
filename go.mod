@@ -10,7 +10,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/mattn/go-shellwords v1.0.14
 	github.com/muesli/termenv v0.16.0
-	github.com/roshbhatia/go-utils v0.9.11
+	github.com/roshbhatia/go-utils v0.10.0
 	golang.org/x/term v0.45.0
 )
 

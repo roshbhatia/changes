@@ -42,7 +42,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          version = "0.10.1";
+          version = "0.11.0";
           mkPackage =
             {
               name,
@@ -57,7 +57,7 @@
               pname = name;
               inherit version;
               src = ./.;
-              vendorHash = "sha256-CxlwbpLQ4g4iZKGaZHn0PGaa+r818GOQUwBGIiR1+y0=";
+              vendorHash = "sha256-EoKGfc4WYxGzh4XNGmJzqnEj3cUEqcxpQAk/q1mIAWw=";
               subPackages = [ subPackage ];
               nativeBuildInputs = [ pkgs.makeWrapper ] ++ pkgs.lib.optional completions pkgs.installShellFiles;
               nativeCheckInputs = [ pkgs.git ];

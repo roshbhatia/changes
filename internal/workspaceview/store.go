@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/roshbhatia/go-utils/xdg"
 )
 
 const (
@@ -27,11 +29,11 @@ type Store struct {
 }
 
 func DefaultStore(cacheMaxEntries int) (Store, error) {
-	state, err := xdgRoot("XDG_STATE_HOME", ".local/state")
+	state, err := xdg.StateHome()
 	if err != nil {
 		return Store{}, err
 	}
-	cache, err := xdgRoot("XDG_CACHE_HOME", ".cache")
+	cache, err := xdg.CacheHome()
 	if err != nil {
 		return Store{}, err
 	}
@@ -135,18 +137,6 @@ func (store Store) snapshotPath(repository, slot string) string {
 func digest(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
-}
-
-func xdgRoot(name, fallback string) (string, error) {
-	root := os.Getenv(name)
-	if root == "" || !filepath.IsAbs(root) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		root = filepath.Join(home, fallback)
-	}
-	return filepath.Clean(root), nil
 }
 
 func readDocument(path string, limit int64, target any) (bool, error) {

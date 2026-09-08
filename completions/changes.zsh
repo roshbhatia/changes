@@ -490,8 +490,9 @@ _changes() {
       ;;
     'note generate')
       _arguments \
-        '--commit[First-parent commit comparison]:value:__changes_completion_values_25' \
+        '--commit[First-parent commit comparison; repeat for several commits]:value:__changes_completion_values_25' \
         '--config[YAML configuration file]:value:' \
+        '--draft[Return validated drafts without writing; requires --json]' \
         '--from[Left revision]:value:__changes_completion_values_26' \
         '--json[Print generated notes as JSON]' \
         '--provider[Note generator provider]:value:__changes_completion_values_27' \
