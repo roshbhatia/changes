@@ -510,8 +510,9 @@ func TestVersionFlag(t *testing.T) {
 		if err != nil {
 			t.Fatalf("changes %v: %v\n%s", args, err, out)
 		}
-		if got := strings.TrimSpace(string(out)); got != "dev" {
-			t.Fatalf("changes %v = %q, want dev", args, got)
+		want := "dev\nprovider/v1 spec " + providerlib.SpecVersion
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Fatalf("changes %v = %q, want %q", args, got, want)
 		}
 	}
 }

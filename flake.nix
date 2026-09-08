@@ -343,8 +343,9 @@
                 ${pkgs.bash}/bin/bash ${./hack/audit-provider-boundary.sh} ${./.}
                 touch "$out"
               '';
-          # The committed schema is the pinned spec export and every manifest
-          # satisfies the spec plus schema/narrow.cue.
+          # The committed schema is the pinned spec export, every manifest
+          # satisfies the spec plus schema/narrow.cue, and the binary reports
+          # the spec version the flake pins.
           provider-spec-contract =
             pkgs.runCommand "changes-provider-spec-contract"
               {
@@ -366,6 +367,7 @@
                     exit 1
                   fi
                 done
+                ${packages.default}/bin/changes --version | grep --fixed-strings --line-regexp "provider/v1 spec $(cat ${provider-spec}/VERSION)"
                 touch "$out"
               '';
           codex-permission-profile =

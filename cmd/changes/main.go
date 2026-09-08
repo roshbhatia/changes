@@ -36,11 +36,18 @@ import (
 	"github.com/roshbhatia/go-utils/completion"
 	"github.com/roshbhatia/go-utils/diffview"
 	gitutil "github.com/roshbhatia/go-utils/git"
+	providerlib "github.com/roshbhatia/go-utils/provider"
 	sharedterminal "github.com/roshbhatia/go-utils/terminal"
 	"github.com/roshbhatia/go-utils/workspace"
 )
 
 var version = "dev"
+
+// specVersion is the provider contract the linked go-utils validates against.
+// A fleet check reads this one line from every tool.
+func specVersion() string {
+	return providerlib.Version + " spec " + providerlib.SpecVersion
+}
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__values" {
@@ -49,6 +56,7 @@ func main() {
 	}
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
 		fmt.Println(version)
+		fmt.Println(specVersion())
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "completion" {
@@ -125,6 +133,7 @@ func main() {
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)
+		fmt.Println(specVersion())
 		return
 	}
 	if *watch && *every <= 0 {
@@ -2027,7 +2036,7 @@ directory. Each repository's files hang under its own name.`,
 			{Name: "stat", Short: "s", Description: "Show change summary"},
 			{Name: "watch", Short: "w", Description: "Watch for changes"},
 			{Name: "width", Description: "Render width", Value: true},
-			{Name: "version", Description: "Print the Changes version"},
+			{Name: "version", Description: "Print the Changes and provider spec versions"},
 		},
 		Subcommands: []completion.Command{
 			{Name: "interactive", Synopsis: "Review changes in an interactive workspace", Flags: workspaceCommandFlags(true)},
@@ -2342,6 +2351,7 @@ func runProvider(args []string) {
 		data, _ := json.Marshal(results)
 		fmt.Println(string(data))
 	} else {
+		fmt.Println(specVersion())
 		output, err := provider.RenderValidations(results)
 		if err != nil {
 			fail(err)

@@ -274,7 +274,7 @@ directory. Each repository's files hang under its own name.
 | `--stat`, `-s` | Show change summary |
 | `--watch`, `-w` | Watch for changes |
 | `--width` `<value>` | Render width |
-| `--version` | Print the Changes version |
+| `--version` | Print the Changes and provider spec versions |
 
 ### `changes interactive`
 
