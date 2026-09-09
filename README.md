@@ -2,7 +2,11 @@
 
 ![Changes diff view](docs/changes.png)
 
-![Changes animated diff review](docs/changes.gif)
+![Reviewing the release archive fix in Changes](docs/changes.gif)
+
+The recording reviews [the release archive fix](https://github.com/roshbhatia/changes/commit/6147beb23c88864180be2cccdec9a52dd1a3a6fc)
+in an isolated checkout. It shows commit inspection, file selection, and diff
+navigation in the interactive workspace. [Tape source](hack/changes.tape).
 
 `changes` reads Git changes as a repository tree. A grouping provider can put
 related hunks into an ordered logical flow before the tree nests hunks under

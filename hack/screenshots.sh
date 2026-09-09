@@ -4,167 +4,58 @@ set -euo pipefail
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
 output_dir=${CHANGES_MEDIA_OUTPUT_DIR:-"$repo_dir/docs"}
-mkdir -p "$output_dir"
+revision=6147beb23c88864180be2cccdec9a52dd1a3a6fc
 
-media_fingerprint() {
+source_fingerprint() {
   {
-    printf '%s\n' flake.lock flake.nix go.mod go.sum hack/changes.tape hack/screenshots.sh
-    find cmd internal extras -type f \
-      \( -name '*.go' -o -name 'package.nix' -o -name 'provider.yaml' -o -name 'package.json' -o -name 'package-lock.json' \) \
-      ! -name '*_test.go' -print | LC_ALL=C sort
-  } | while IFS= read -r path; do
-    sha256sum "$path"
+    printf '%s\n' go.mod go.sum flake.lock hack/changes.tape hack/screenshots.sh
+    find cmd internal -type f -name '*.go' ! -name '*_test.go' -print | LC_ALL=C sort
+  } | while IFS= read -r file; do
+    sha256sum "$file"
   done | sha256sum | cut -d ' ' -f 1
 }
 
 media_is_valid() {
-  local gif_format
-  local png_codec
-  [[ -s $output_dir/changes.png && -s $output_dir/changes.gif ]] || return 1
-  png_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
-    -of default=noprint_wrappers=1:nokey=1 "$output_dir/changes.png") || return 1
-  gif_format=$(ffprobe -v error -show_entries format=format_name \
-    -of default=noprint_wrappers=1:nokey=1 "$output_dir/changes.gif") || return 1
-  [[ $png_codec == png && $gif_format == gif ]]
+  local duration
+  duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$output_dir/changes.gif") || return 1
+  awk -v duration="$duration" 'BEGIN { exit !(duration >= 50 && duration <= 120) }' || return 1
+  ffprobe -v error "$output_dir/changes.png" > /dev/null
 }
 
-if [[ ${1:-} == "--check" ]]; then
-  expected=$(media_fingerprint)
-  current=$(cat "$output_dir/.changes-media.sha256" 2>/dev/null || true)
-  if [[ $current != "$expected" ]] || ! media_is_valid; then
-    echo "Changes media is stale; run ./hack/screenshots.sh" >&2
+fingerprint() {
+  source_fingerprint
+  (cd "$output_dir" && sha256sum changes.gif changes.png)
+}
+
+if [[ ${1:-} == --check ]]; then
+  media_is_valid && [[ $(fingerprint) == "$(cat "$output_dir/.changes-media.sha256")" ]] || {
+    echo 'Changes media is stale or invalid; run ./hack/screenshots.sh' >&2
     exit 1
-  fi
+  }
   exit 0
 fi
 
 media_root=$(mktemp -d)
-fixture="$media_root/fixture"
-trap 'rm -rf "$media_root"' EXIT
+trap 'rm -rf "${media_root:?}"' EXIT
+mkdir -p "$output_dir" "$media_root/config" "$media_root/home" "$media_root/cache" "$media_root/data" "$media_root/state"
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_WORK_TREE
-mkdir -p \
-  "$fixture" \
-  "$media_root/cache" \
-  "$media_root/config" \
-  "$media_root/data" \
-  "$media_root/data-dirs" \
-  "$media_root/home" \
-  "$media_root/state"
-
+git clone --quiet --no-hardlinks "$repo_dir" "$media_root/changes"
+git -C "$media_root/changes" checkout --quiet --detach "$revision"
 full_path=${CHANGES_DEMO_FULL:-$(nix build .#full --no-link --print-out-paths)}
-
-git -C "$fixture" init -q
-git -C "$fixture" config user.email screenshot@example.com
-git -C "$fixture" config user.name Screenshot
-mkdir -p "$fixture/internal/auth"
-printf '%s\n' \
-  'package auth' \
-  '' \
-  'import (' \
-  '    "errors"' \
-  '    "strings"' \
-  ')' \
-  '' \
-  'var ErrEmptyToken = errors.New("token is empty")' \
-  '' \
-  'func NormalizeToken(raw string) (string, error) {' \
-  '    token := strings.TrimSpace(raw)' \
-  '    if token == "" {' \
-  '        return "", ErrEmptyToken' \
-  '    }' \
-  '    return token, nil' \
-  '}' \
-  '' \
-  'func Authorize(raw string, allowed map[string]bool) error {' \
-  '    token, err := NormalizeToken(raw)' \
-  '    if err != nil {' \
-  '        return err' \
-  '    }' \
-  '    if !allowed[token] {' \
-  '        return errors.New("token rejected")' \
-  '    }' \
-  '    return nil' \
-  '}' \
-  >"$fixture/internal/auth/token.go"
-git -C "$fixture" add internal/auth/token.go
-git -C "$fixture" commit -qm initial
-printf '%s\n' \
-  'package auth' \
-  '' \
-  'import (' \
-  '    "errors"' \
-  '    "fmt"' \
-  '    "strings"' \
-  ')' \
-  '' \
-  'var (' \
-  '    ErrEmptyToken = errors.New("token is empty")' \
-  '    ErrTokenScheme = errors.New("token must use the Bearer scheme")' \
-  '    ErrRejectedToken = errors.New("token rejected")' \
-  ')' \
-  '' \
-  'func NormalizeToken(raw string) (string, error) {' \
-  '    raw = strings.TrimSpace(raw)' \
-  '    if raw == "" {' \
-  '        return "", ErrEmptyToken' \
-  '    }' \
-  '    if !strings.HasPrefix(raw, "Bearer ") {' \
-  '        return "", ErrTokenScheme' \
-  '    }' \
-  '    token := strings.TrimSpace(strings.TrimPrefix(raw, "Bearer "))' \
-  '    if token == "" {' \
-  '        return "", ErrEmptyToken' \
-  '    }' \
-  '    return token, nil' \
-  '}' \
-  '' \
-  'func Authorize(raw string, allowed map[string]bool) error {' \
-  '    token, err := NormalizeToken(raw)' \
-  '    if err != nil {' \
-  '        return err' \
-  '    }' \
-  '    if !allowed[token] {' \
-  '        return fmt.Errorf("%w: %.4s…", ErrRejectedToken, token)' \
-  '    }' \
-  '    return nil' \
-  '}' \
-  >"$fixture/internal/auth/token.go"
-
+test -x "$full_path/bin/changes"
 (
-  cd "$fixture"
+  cd "$media_root/changes"
   export HOME="$media_root/home"
-  export XDG_CACHE_HOME="$media_root/cache"
   export XDG_CONFIG_HOME="$media_root/config"
+  export XDG_CACHE_HOME="$media_root/cache"
   export XDG_DATA_HOME="$media_root/data"
-  export XDG_DATA_DIRS="$media_root/data-dirs"
   export XDG_STATE_HOME="$media_root/state"
+  export XDG_DATA_DIRS="$full_path/share"
+  export PATH="$full_path/bin:$PATH"
   unset CHANGES_CONFIG CHANGES_PROVIDERS_DIRECTORY
-  PATH="$full_path/bin:$PATH" \
-    changes note add --provider local-notes \
-    --file internal/auth/token.go \
-    --line 15 \
-    --author screenshot \
-    --message $'Keep the Bearer parsing boundary\nCallers depend on normalized input after this branch.' \
-    >/dev/null
-  PATH="$full_path/bin:$PATH" \
-    CHANGES_DIFF_ENGINE=builtin \
-    CHANGES_DIFF_LAYOUT=unified \
-    freeze --execute "changes -color always -quiet" \
-    --output "$output_dir/changes.png" \
-    --width 1100 \
-    --padding 24 \
-    --margin 16 \
-    --window
-
-  PATH="$full_path/bin:$PATH" \
-    CHANGES_DIFF_ENGINE=builtin \
-    CHANGES_DIFF_LAYOUT=unified \
-    vhs "$repo_dir/hack/changes.tape" --output "$output_dir/changes.gif"
+  vhs "$repo_dir/hack/changes.tape" --output "$output_dir/changes.gif"
+  git diff --exit-code --quiet
 )
-
-if ! media_is_valid; then
-  echo "Changes media generation produced an empty or invalid image" >&2
-  exit 1
-fi
-
-media_fingerprint >"$output_dir/.changes-media.sha256"
+ffmpeg -v error -y -i "$output_dir/changes.gif" -ss 25 -frames:v 1 "$output_dir/changes.png"
+media_is_valid
+fingerprint > "$output_dir/.changes-media.sha256"
