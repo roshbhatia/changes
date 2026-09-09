@@ -17,7 +17,7 @@ export extern "changes" [
   --since: string # Left revision or time
   --staged # Compare the index
   --stat(-s) # Show change summary
-  --version # Print the Changes version
+  --version # Print the Changes and provider spec versions
   --watch(-w) # Watch for changes
   --width: string # Render width
   ...args: string@"__changes_completion_values_4"

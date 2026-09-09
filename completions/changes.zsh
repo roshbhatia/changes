@@ -387,7 +387,7 @@ _changes() {
         '--since[Left revision or time]:value:' \
         '--staged[Compare the index]' \
         '(-s)--stat[Show change summary]' \
-        '--version[Print the Changes version]' \
+        '--version[Print the Changes and provider spec versions]' \
         '(-w)--watch[Watch for changes]' \
         '--width[Render width]:value:' \
         '*:argument:__changes_completion_values_4'

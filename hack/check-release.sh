@@ -36,7 +36,7 @@ completions/changes.fish
 completions/changes.nu
 completions/changes.zsh
 schema/changes.schema.json
-schema/provider.cue
+schema/narrow.cue
 schema/provider.schema.json
 schema/workspace.schema.json
 EOF

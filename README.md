@@ -274,7 +274,7 @@ directory. Each repository's files hang under its own name.
 | `--stat`, `-s` | Show change summary |
 | `--watch`, `-w` | Watch for changes |
 | `--width` `<value>` | Render width |
-| `--version` | Print the Changes version |
+| `--version` | Print the Changes and provider spec versions |
 
 ### `changes interactive`
 
@@ -445,7 +445,7 @@ go test -race ./...
 go run ./cmd/changes generate --check
 ./hack/audit-provider-boundary.sh .
 for manifest in extras/*/provider.yaml; do
-  cue vet schema/provider.cue "$manifest" -d '#Provider'
+  cue vet -d '#Manifest' "$PROVIDER_SPEC/provider.cue" schema/narrow.cue "$manifest"
 done
 nix flake check
 ./hack/screenshots.sh

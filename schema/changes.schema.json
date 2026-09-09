@@ -35,8 +35,8 @@
     },
     "Duration": {
       "type": "string",
-      "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
-      "description": "Go duration such as 500ms, 10s, or 2m"
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration such as 500ms, 10s, 1h30m, or 1.5s"
     },
     "Interactive": {
       "properties": {

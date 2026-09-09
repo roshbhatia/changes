@@ -1,0 +1,8 @@
+# Rejected: Changes requires at least one changes.* action.
+version: provider/v1
+name: no-changes-action-fixture
+description: Manifest with no Changes action
+command: [fixture]
+actions:
+  provider.validate:
+    description: This manifest must fail schema validation

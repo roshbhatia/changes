@@ -1,6 +1,7 @@
 package appconfig
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,41 @@ func TestSchemaIncludesProviders(t *testing.T) {
 	} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("schema omits %s", want)
+		}
+	}
+}
+
+// go-utils v0.12.0 dropped Duration's JSONSchema method, so without the field
+// tags every duration would reflect as an integer.
+func TestSchemaKeepsDurationsAsStrings(t *testing.T) {
+	data, err := Schema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Definitions map[string]struct {
+			Type       string `json:"type"`
+			Pattern    string `json:"pattern"`
+			Properties map[string]struct {
+				Ref string `json:"$ref"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	// The Duration type owns its schema; every field points at it.
+	duration := schema.Definitions["Duration"]
+	if duration.Type != "string" || !strings.Contains(duration.Pattern, "(ns|us|µs|ms|s|m|h)") {
+		t.Fatalf("Duration def = type %q pattern %q", duration.Type, duration.Pattern)
+	}
+	for _, field := range [][2]string{
+		{"Interactive", "cacheTtl"}, {"Notes", "generatorTimeout"}, {"Notes", "refreshInterval"},
+		{"Providers", "cacheTtl"}, {"Providers", "timeout"},
+	} {
+		got := schema.Definitions[field[0]].Properties[field[1]]
+		if got.Ref != "#/$defs/Duration" {
+			t.Fatalf("%s.%s $ref = %q, want #/$defs/Duration", field[0], field[1], got.Ref)
 		}
 	}
 }
