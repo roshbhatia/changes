@@ -41,7 +41,7 @@ schema/provider.schema.json
 schema/workspace.schema.json
 EOF
 
-archives=("$source_dir"/dist/*.tar.gz)
+archives=("$source_dir"/dist/changes_[0-9]*.tar.gz)
 if [[ ${#archives[@]} -ne 3 ]]; then
   printf 'expected 3 release archives, found %d\n' "${#archives[@]}" >&2
   exit 1
@@ -51,3 +51,32 @@ for archive in "${archives[@]}"; do
   tar -tzf "$archive" | sed 's#^\./##' | LC_ALL=C sort >"$actual"
   diff -u "$expected" "$actual"
 done
+
+manifests=("$source_dir"/extras/*/provider.yaml)
+for manifest in "${manifests[@]}"; do
+  provider_dir=$(dirname "$manifest")
+  provider=$(basename "$provider_dir")
+  archives=("$source_dir"/dist/changes_provider_"$provider"_*.tar.gz)
+  if [[ ${#archives[@]} -ne 3 ]]; then
+    printf 'expected 3 archives for %s, found %d\n' "$provider" "${#archives[@]}" >&2
+    exit 1
+  fi
+  {
+    printf '%s\n' LICENSE README.md "changes-provider-$provider" "share/changes/providers/$provider/provider.yaml"
+    if [[ -d "$provider_dir/runtime" ]]; then
+      printf '%s\n' runtime/package.json runtime/package-lock.json
+    fi
+  } | LC_ALL=C sort >"$expected"
+  for archive in "${archives[@]}"; do
+    actual="$release_root/$(basename "$archive").contents"
+    tar -tzf "$archive" | sed 's#^\./##' | LC_ALL=C sort >"$actual"
+    diff -u "$expected" "$actual"
+  done
+done
+
+archives=("$source_dir"/dist/*.tar.gz)
+expected_count=$((3 * (1 + ${#manifests[@]})))
+if [[ ${#archives[@]} -ne $expected_count ]]; then
+  printf 'expected %d total archives, found %d\n' "$expected_count" "${#archives[@]}" >&2
+  exit 1
+fi

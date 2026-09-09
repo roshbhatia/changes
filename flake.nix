@@ -50,7 +50,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          version = "0.12.1";
+          version = "0.12.2";
           mkPackage =
             {
               name,
