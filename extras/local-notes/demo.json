@@ -1,0 +1,10 @@
+{
+  "name": "local-notes",
+  "summary": "Keep a local note on prefix validation",
+  "replay": false,
+  "core": "changes",
+  "nix": "github:roshbhatia/changes#provider-local-notes",
+  "brew": "changes-provider-local-notes",
+  "binary": "changes-provider-local-notes",
+  "manifest_path": "share/changes/providers/local-notes/provider.yaml"
+}

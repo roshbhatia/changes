@@ -1,0 +1,11 @@
+{
+  "name": "codex-review",
+  "summary": "Replay an offline token parser review",
+  "replay": true,
+  "core": "changes",
+  "nix": "github:roshbhatia/changes#provider-codex-review",
+  "brew": "changes-provider-codex-review",
+  "binary": "changes-provider-codex-review",
+  "runtime_note": "Install and authenticate Codex before generating review notes. On macOS, use `brew install --cask codex`. The Nix package includes the CLI.",
+  "manifest_path": "share/changes/providers/codex-review/provider.yaml"
+}

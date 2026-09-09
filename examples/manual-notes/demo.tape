@@ -11,11 +11,11 @@ Set TypingSpeed 25ms
 
 Sleep 1s
 
-Type "changes note add --file main.go --line 8 --message 'Keep the fallback explicit' >/dev/null"
+Type "changes note add --provider local-notes --file internal/auth/token.go --line 6 --message 'Require the Bearer prefix' >/dev/null"
 Enter
 Sleep 2s
 
-Type "changes"
+Type "clear; changes"
 Enter
-Wait+Screen /line 8@right/
+Wait+Screen /Require the Bearer prefix/
 Sleep 3s

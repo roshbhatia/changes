@@ -2,6 +2,9 @@
 
 [![Codex review provider demo](demo.gif)](demo.tape)
 
+The demo replays a recorded Codex response against a local parser fixture.
+It does not call a live model.
+
 Install a generator and a writable store. Then run the generator explicitly:
 
 ```bash

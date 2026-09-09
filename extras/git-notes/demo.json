@@ -1,0 +1,13 @@
+{
+  "name": "git-notes",
+  "summary": "Store token parser review notes in Git",
+  "replay": false,
+  "core": "changes",
+  "nix": "github:roshbhatia/changes#provider-git-notes",
+  "brew": "changes-provider-git-notes",
+  "binary": "changes-provider-git-notes",
+  "dependencies": [
+    "git"
+  ],
+  "manifest_path": "share/changes/providers/git-notes/provider.yaml"
+}

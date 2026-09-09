@@ -70,3 +70,9 @@ Replay the [VHS tape](demo.tape) from the repository root:
 ```bash
 nix develop -c ./hack/example-demos.sh neovim-notes
 ```
+
+When several note writers are installed, select one in the plugin setup:
+
+```lua
+require("changes.notes").setup({ provider = "local-notes" })
+```

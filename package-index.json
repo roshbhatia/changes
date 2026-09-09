@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "name": "ast-grep",
+      "summary": "Inspect the changed token parser symbol",
+      "replay": false,
+      "core": "changes",
+      "nix": "github:roshbhatia/changes#provider-ast-grep",
+      "brew": "changes-provider-ast-grep",
+      "binary": "changes-provider-ast-grep",
+      "dependencies": [
+        "ast-grep"
+      ],
+      "manifest_path": "share/changes/providers/ast-grep/provider.yaml"
+    },
+    {
+      "name": "calldiff",
+      "summary": "Inspect the new validation call",
+      "replay": false,
+      "core": "changes",
+      "nix": "github:roshbhatia/changes#provider-calldiff",
+      "brew": "changes-provider-calldiff",
+      "binary": "changes-provider-calldiff",
+      "dependencies": [
+        "node",
+        "git"
+      ],
+      "npm_runtime": "extras/calldiff/runtime",
+      "manifest_path": "share/changes/providers/calldiff/provider.yaml"
+    },
+    {
+      "name": "codex-review",
+      "summary": "Replay an offline token parser review",
+      "replay": true,
+      "core": "changes",
+      "nix": "github:roshbhatia/changes#provider-codex-review",
+      "brew": "changes-provider-codex-review",
+      "binary": "changes-provider-codex-review",
+      "runtime_note": "Install and authenticate Codex before generating review notes. On macOS, use `brew install --cask codex`. The Nix package includes the CLI.",
+      "manifest_path": "share/changes/providers/codex-review/provider.yaml"
+    },
+    {
+      "name": "git-notes",
+      "summary": "Store token parser review notes in Git",
+      "replay": false,
+      "core": "changes",
+      "nix": "github:roshbhatia/changes#provider-git-notes",
+      "brew": "changes-provider-git-notes",
+      "binary": "changes-provider-git-notes",
+      "dependencies": [
+        "git"
+      ],
+      "manifest_path": "share/changes/providers/git-notes/provider.yaml"
+    },
+    {
+      "name": "github-pr",
+      "summary": "Replay an offline pull request review thread",
+      "replay": true,
+      "core": "changes",
+      "nix": "github:roshbhatia/changes#provider-github-pr",
+      "brew": "changes-provider-github-pr",
+      "binary": "changes-provider-github-pr",
+      "dependencies": [
+        "gh",
+        "git"
+      ],
+      "manifest_path": "share/changes/providers/github-pr/provider.yaml"
+    },
+    {
+      "name": "local-notes",
+      "summary": "Keep a local note on prefix validation",
+      "replay": false,
+      "core": "changes",
+      "nix": "github:roshbhatia/changes#provider-local-notes",
+      "brew": "changes-provider-local-notes",
+      "binary": "changes-provider-local-notes",
+      "manifest_path": "share/changes/providers/local-notes/provider.yaml"
+    }
+  ],
+  "packages": [
+    {
+      "name": "changes-provider-ast-grep",
+      "kind": "provider",
+      "binary": "changes-provider-ast-grep",
+      "description": "Inspect the changed token parser symbol",
+      "archive": "changes_provider_ast-grep_%{version}_%{os}_%{arch}.tar.gz",
+      "share": [
+        "share/changes/providers/ast-grep/provider.yaml"
+      ],
+      "python_script": false,
+      "dependencies": [
+        "ast-grep"
+      ]
+    },
+    {
+      "name": "changes-provider-calldiff",
+      "kind": "provider",
+      "binary": "changes-provider-calldiff",
+      "description": "Inspect the new validation call",
+      "archive": "changes_provider_calldiff_%{version}_%{os}_%{arch}.tar.gz",
+      "share": [
+        "share/changes/providers/calldiff/provider.yaml"
+      ],
+      "python_script": false,
+      "dependencies": [
+        "node",
+        "git"
+      ],
+      "npm_runtime": "extras/calldiff/runtime"
+    },
+    {
+      "name": "changes-provider-codex-review",
+      "kind": "provider",
+      "binary": "changes-provider-codex-review",
+      "description": "Replay an offline token parser review",
+      "archive": "changes_provider_codex-review_%{version}_%{os}_%{arch}.tar.gz",
+      "share": [
+        "share/changes/providers/codex-review/provider.yaml"
+      ],
+      "python_script": false
+    },
+    {
+      "name": "changes-provider-git-notes",
+      "kind": "provider",
+      "binary": "changes-provider-git-notes",
+      "description": "Store token parser review notes in Git",
+      "archive": "changes_provider_git-notes_%{version}_%{os}_%{arch}.tar.gz",
+      "share": [
+        "share/changes/providers/git-notes/provider.yaml"
+      ],
+      "python_script": false,
+      "dependencies": [
+        "git"
+      ]
+    },
+    {
+      "name": "changes-provider-github-pr",
+      "kind": "provider",
+      "binary": "changes-provider-github-pr",
+      "description": "Replay an offline pull request review thread",
+      "archive": "changes_provider_github-pr_%{version}_%{os}_%{arch}.tar.gz",
+      "share": [
+        "share/changes/providers/github-pr/provider.yaml"
+      ],
+      "python_script": false,
+      "dependencies": [
+        "gh",
+        "git"
+      ]
+    },
+    {
+      "name": "changes-provider-local-notes",
+      "kind": "provider",
+      "binary": "changes-provider-local-notes",
+      "description": "Keep a local note on prefix validation",
+      "archive": "changes_provider_local-notes_%{version}_%{os}_%{arch}.tar.gz",
+      "share": [
+        "share/changes/providers/local-notes/provider.yaml"
+      ],
+      "python_script": false
+    }
+  ]
+}

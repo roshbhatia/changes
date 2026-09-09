@@ -14,7 +14,7 @@ Sleep 1s
 
 Type "changes --color always HEAD^ HEAD"
 Enter
-Wait+Screen /Keep the fallback explicit/
+Wait+Screen /Require the Bearer prefix/
 Sleep 3s
 
 Type "changes note list --from HEAD^ --to HEAD --provider github-pr"

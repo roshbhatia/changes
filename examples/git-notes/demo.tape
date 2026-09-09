@@ -11,7 +11,7 @@ Set TypingSpeed 20ms
 
 Sleep 1s
 
-Type "changes note add --commit HEAD --provider git-notes --file main.go --line 6 --origin agent --author review-agent --message 'Keep normalization before the fallback'"
+Type "changes note add --commit HEAD --provider git-notes --file internal/auth/token.go --line 6 --origin agent --author review-agent --message 'Reject empty tokens before session lookup'"
 Enter
 Sleep 2s
 
@@ -30,5 +30,5 @@ Sleep 2s
 
 Type "changes HEAD^ HEAD"
 Enter
-Wait+Screen /Keep normalization before the fallback/
+Wait+Screen /Reject empty tokens before session lookup/
 Sleep 3s

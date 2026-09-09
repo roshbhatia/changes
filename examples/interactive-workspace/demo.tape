@@ -18,7 +18,7 @@ Sleep 2s
 
 Ctrl+H
 Tab
-Wait+Screen /name the default value/
+Wait+Screen /reject an empty bearer/
 Sleep 1s
 Space
 Type "j"
@@ -48,4 +48,5 @@ Type "?"
 Wait+Screen /click \/ wheel/
 Sleep 3s
 Escape
+Sleep 3s
 Type "q"

@@ -67,3 +67,10 @@ Replay the [VHS tape](demo.tape) from the repository root:
 ```bash
 nix develop -c ./hack/example-demos.sh interactive-workspace
 ```
+
+When several note writers are installed, select local storage:
+
+```yaml
+notes:
+  store: local-notes
+```

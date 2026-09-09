@@ -70,7 +70,7 @@ fi
 jq empty "$schema"
 
 printf '%s\n' \
-  '{"notes":[{"path":"main.go","side":"RIGHT","startLine":0,"line":8,' \
-  '"summary":"Keep the fallback explicit",' \
-  '"rationale":"Callers rely on this empty-input behavior."}]}' \
+  '{"notes":[{"path":"internal/auth/token.go","side":"RIGHT","startLine":0,"line":5,' \
+  '"summary":"Require the Bearer prefix",' \
+  '"rationale":"Reject an embedded prefix before session lookup."}]}' \
   >"$output"

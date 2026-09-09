@@ -1,0 +1,14 @@
+{
+  "name": "github-pr",
+  "summary": "Replay an offline pull request review thread",
+  "replay": true,
+  "core": "changes",
+  "nix": "github:roshbhatia/changes#provider-github-pr",
+  "brew": "changes-provider-github-pr",
+  "binary": "changes-provider-github-pr",
+  "dependencies": [
+    "gh",
+    "git"
+  ],
+  "manifest_path": "share/changes/providers/github-pr/provider.yaml"
+}

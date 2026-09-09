@@ -11,15 +11,17 @@ Set TypingSpeed 20ms
 
 Sleep 1s
 
-Type "nvim +6 main.go"
+Type "nvim +6 internal/auth/token.go"
 Enter
-Sleep 2s
+Wait+Screen /ValidToken/
+Sleep 1s
 
 Type ":ChangesNote"
 Enter
-Sleep 1s
-Type "Explain why normalization precedes the fallback"
+Wait+Screen /Diff note:/
+Type "Explain the token prefix boundary"
 Enter
+Wait+Screen /changes note:/
 Sleep 2s
 
 Type ":q"
@@ -28,5 +30,5 @@ Sleep 1s
 
 Type "changes"
 Enter
-Wait+Screen /Explain why normalization precedes the fallback/
+Wait+Screen /Explain the token prefix boundary/
 Sleep 3s

@@ -11,11 +11,11 @@ Set TypingSpeed 25ms
 
 Sleep 1s
 
-Type "changes note add --file main.go --line 6 --origin agent --author harness --session session-42 --message 'Preserve the normalization boundary' >/dev/null"
+Type "changes note add --provider local-notes --file internal/auth/token.go --line 6 --origin agent --author harness --session token-review --message 'Preserve the token prefix boundary' >/dev/null"
 Enter
 Sleep 2s
 
-Type "changes --color always"
+Type "clear; changes --color always"
 Enter
-Wait+Screen /Preserve the normalization boundary/
+Wait+Screen /Preserve the token prefix boundary/
 Sleep 3s

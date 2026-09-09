@@ -1,0 +1,13 @@
+{
+  "name": "ast-grep",
+  "summary": "Inspect the changed token parser symbol",
+  "replay": false,
+  "core": "changes",
+  "nix": "github:roshbhatia/changes#provider-ast-grep",
+  "brew": "changes-provider-ast-grep",
+  "binary": "changes-provider-ast-grep",
+  "dependencies": [
+    "ast-grep"
+  ],
+  "manifest_path": "share/changes/providers/ast-grep/provider.yaml"
+}

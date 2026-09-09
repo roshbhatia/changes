@@ -38,3 +38,9 @@ Replay the [VHS tape](demo.tape) from the repository root:
 ```bash
 nix develop -c ./hack/example-demos.sh manual-notes
 ```
+
+When several note writers are installed, select one for note creation:
+
+```bash
+changes note add --provider local-notes --file internal/auth/token.go --line 6
+```

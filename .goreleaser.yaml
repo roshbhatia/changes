@@ -8,6 +8,14 @@ before:
     - go run ./cmd/changes generate --check
 
 builds:
+  # BEGIN GENERATED EXTRAS BUILDS
+  - {"id": "changes-provider-ast-grep", "main": "./extras/ast-grep", "binary": "changes-provider-ast-grep", "env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "goos": ["darwin", "linux"], "goarch": ["amd64", "arm64"], "ignore": [{"goos": "darwin", "goarch": "amd64"}]}
+  - {"id": "changes-provider-calldiff", "main": "./extras/calldiff", "binary": "changes-provider-calldiff", "env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "goos": ["darwin", "linux"], "goarch": ["amd64", "arm64"], "ignore": [{"goos": "darwin", "goarch": "amd64"}]}
+  - {"id": "changes-provider-codex-review", "main": "./extras/codex-review", "binary": "changes-provider-codex-review", "env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "goos": ["darwin", "linux"], "goarch": ["amd64", "arm64"], "ignore": [{"goos": "darwin", "goarch": "amd64"}]}
+  - {"id": "changes-provider-git-notes", "main": "./extras/git-notes", "binary": "changes-provider-git-notes", "env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "goos": ["darwin", "linux"], "goarch": ["amd64", "arm64"], "ignore": [{"goos": "darwin", "goarch": "amd64"}]}
+  - {"id": "changes-provider-github-pr", "main": "./extras/github-pr", "binary": "changes-provider-github-pr", "env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "goos": ["darwin", "linux"], "goarch": ["amd64", "arm64"], "ignore": [{"goos": "darwin", "goarch": "amd64"}]}
+  - {"id": "changes-provider-local-notes", "main": "./extras/local-notes", "binary": "changes-provider-local-notes", "env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "goos": ["darwin", "linux"], "goarch": ["amd64", "arm64"], "ignore": [{"goos": "darwin", "goarch": "amd64"}]}
+  # END GENERATED EXTRAS
   - id: changes
     main: ./cmd/changes
     binary: changes
@@ -21,6 +29,14 @@ builds:
       - goos: darwin
         goarch: amd64
 archives:
+  # BEGIN GENERATED EXTRAS ARCHIVES
+  - {"id": "provider-ast-grep", "ids": ["changes-provider-ast-grep"], "formats": ["tar.gz"], "name_template": "changes_provider_ast-grep_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "files": ["LICENSE", {"src": "extras/ast-grep/README.md", "dst": "README.md"}, {"src": "extras/ast-grep/provider.yaml", "dst": "share/changes/providers/ast-grep/provider.yaml"}]}
+  - {"id": "provider-calldiff", "ids": ["changes-provider-calldiff"], "formats": ["tar.gz"], "name_template": "changes_provider_calldiff_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "files": ["LICENSE", {"src": "extras/calldiff/README.md", "dst": "README.md"}, {"src": "extras/calldiff/provider.yaml", "dst": "share/changes/providers/calldiff/provider.yaml"}, {"src": "extras/calldiff/runtime/package.json", "dst": "runtime/package.json"}, {"src": "extras/calldiff/runtime/package-lock.json", "dst": "runtime/package-lock.json"}]}
+  - {"id": "provider-codex-review", "ids": ["changes-provider-codex-review"], "formats": ["tar.gz"], "name_template": "changes_provider_codex-review_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "files": ["LICENSE", {"src": "extras/codex-review/README.md", "dst": "README.md"}, {"src": "extras/codex-review/provider.yaml", "dst": "share/changes/providers/codex-review/provider.yaml"}]}
+  - {"id": "provider-git-notes", "ids": ["changes-provider-git-notes"], "formats": ["tar.gz"], "name_template": "changes_provider_git-notes_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "files": ["LICENSE", {"src": "extras/git-notes/README.md", "dst": "README.md"}, {"src": "extras/git-notes/provider.yaml", "dst": "share/changes/providers/git-notes/provider.yaml"}]}
+  - {"id": "provider-github-pr", "ids": ["changes-provider-github-pr"], "formats": ["tar.gz"], "name_template": "changes_provider_github-pr_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "files": ["LICENSE", {"src": "extras/github-pr/README.md", "dst": "README.md"}, {"src": "extras/github-pr/provider.yaml", "dst": "share/changes/providers/github-pr/provider.yaml"}]}
+  - {"id": "provider-local-notes", "ids": ["changes-provider-local-notes"], "formats": ["tar.gz"], "name_template": "changes_provider_local-notes_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "files": ["LICENSE", {"src": "extras/local-notes/README.md", "dst": "README.md"}, {"src": "extras/local-notes/provider.yaml", "dst": "share/changes/providers/local-notes/provider.yaml"}]}
+  # END GENERATED EXTRAS
   - id: changes
     ids: [changes]
     formats: [tar.gz]
@@ -41,3 +57,7 @@ checksum:
 
 changelog:
   use: github-native
+
+release:
+  extra_files:
+    - glob: package-index.json

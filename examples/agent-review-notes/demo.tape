@@ -11,11 +11,15 @@ Set TypingSpeed 25ms
 
 Sleep 1s
 
+Type "echo 'Offline replay: recorded Codex review, local parser fixture'"
+Enter
+Sleep 2s
+
 Type "changes note generate --provider codex-review --store local-notes >/dev/null"
 Enter
 Sleep 2s
 
 Type "changes --color always"
 Enter
-Wait+Screen /Keep the fallback explicit/
+Wait+Screen /Require the Bearer prefix/
 Sleep 3s

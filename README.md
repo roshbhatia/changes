@@ -147,7 +147,7 @@ given name wins. Set
 `providers.directory` or `CHANGES_PROVIDERS_DIRECTORY` to replace the first
 configuration directory.
 
-Each provider uses the shared `provider/v1` manifest. Actions add arguments and
+Each provider uses the `provider/v1` manifest. Actions add arguments and
 environment values through Go templates. Changes executes the resulting argv
 directly and never inserts a shell. The core knows the semantic actions
 `changes.groups`, `changes.symbols`, `changes.calls`, `changes.notes`,

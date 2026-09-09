@@ -51,7 +51,7 @@ mkdir -p \
   "$media_root/home" \
   "$media_root/state"
 
-full_path=$(nix build .#full --no-link --print-out-paths)
+full_path=${CHANGES_DEMO_FULL:-$(nix build .#full --no-link --print-out-paths)}
 
 git -C "$fixture" init -q
 git -C "$fixture" config user.email screenshot@example.com
@@ -140,7 +140,7 @@ printf '%s\n' \
   export XDG_STATE_HOME="$media_root/state"
   unset CHANGES_CONFIG CHANGES_PROVIDERS_DIRECTORY
   PATH="$full_path/bin:$PATH" \
-    changes note add \
+    changes note add --provider local-notes \
     --file internal/auth/token.go \
     --line 15 \
     --author screenshot \

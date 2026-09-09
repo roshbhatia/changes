@@ -15,10 +15,10 @@ Sleep 1s
 
 Type "changes --color always"
 Enter
-Wait+Screen /Normalize/
+Wait+Screen /ValidToken/
 Sleep 3s
 
-Type "changes difftool .demo/before.go .demo/after.go main.go"
+Type "changes difftool .demo/before.go .demo/after.go internal/auth/token.go"
 Enter
-Wait+Screen /ready/
+Wait+Screen /HasPrefix/
 Sleep 3s

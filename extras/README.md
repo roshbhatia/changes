@@ -32,7 +32,7 @@ into the adapter path. It does not expose those tools as profile commands.
 - `git-notes/provider.yaml` advertises `changes.notes` and
   `changes.notes.create` for committed comparisons. It stores canonical records
   under `refs/notes/changes` and never fetches, merges, pushes, or changes Git
-  configuration. Its package stays outside `full` to avoid two default writers.
+  configuration. Select the writer explicitly when creating notes.
 
 Each adapter reads one JSON request from standard input and writes one JSON
 response. The manifest follows `provider/v1`, which Changes validates against
@@ -62,3 +62,16 @@ git push origin refs/notes/changes
 A normal branch fetch or push does not include this ref. Resolve any conflicting
 stable note keys before using the provider again. Changes does not configure
 notes display or rewrite behavior.
+
+<!-- BEGIN GENERATED CATALOG -->
+
+| Extra | Task | Demo |
+|---|---|---|
+| [ast-grep](ast-grep/README.md) | Inspect the changed token parser symbol | [Tape](ast-grep/demo.tape) |
+| [calldiff](calldiff/README.md) | Inspect the new validation call | [Tape](calldiff/demo.tape) |
+| [codex-review](codex-review/README.md) | Replay an offline token parser review | [Tape](codex-review/demo.tape) |
+| [git-notes](git-notes/README.md) | Store token parser review notes in Git | [Tape](git-notes/demo.tape) |
+| [github-pr](github-pr/README.md) | Replay an offline pull request review thread | [Tape](github-pr/demo.tape) |
+| [local-notes](local-notes/README.md) | Keep a local note on prefix validation | [Tape](local-notes/demo.tape) |
+
+<!-- END GENERATED CATALOG -->

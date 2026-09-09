@@ -15,7 +15,7 @@ on the selected diff side:
 ```bash
 changes note add \
   --file internal/worker.go \
-  --line 84 \
+  --line 64 \
   --origin agent \
   --author harness \
   --session "$HARNESS_SESSION_ID" \
@@ -39,7 +39,7 @@ Install and select that provider after the harness creates a commit:
 ```bash
 nix profile install github:roshbhatia/changes#provider-git-notes
 changes note add --commit HEAD --provider git-notes \
-  --file internal/worker.go --line 84 \
+  --file internal/worker.go --line 64 \
   --origin agent --author harness \
   --session "$HARNESS_SESSION_ID" \
   --message "Preserve the retry boundary"

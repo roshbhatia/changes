@@ -1,0 +1,15 @@
+{
+  "name": "calldiff",
+  "summary": "Inspect the new validation call",
+  "replay": false,
+  "core": "changes",
+  "nix": "github:roshbhatia/changes#provider-calldiff",
+  "brew": "changes-provider-calldiff",
+  "binary": "changes-provider-calldiff",
+  "dependencies": [
+    "node",
+    "git"
+  ],
+  "npm_runtime": "extras/calldiff/runtime",
+  "manifest_path": "share/changes/providers/calldiff/provider.yaml"
+}
