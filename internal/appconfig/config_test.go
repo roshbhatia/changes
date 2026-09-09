@@ -87,22 +87,28 @@ func TestSchemaKeepsDurationsAsStrings(t *testing.T) {
 	}
 	var schema struct {
 		Definitions map[string]struct {
+			Type       string `json:"type"`
+			Pattern    string `json:"pattern"`
 			Properties map[string]struct {
-				Type    string `json:"type"`
-				Pattern string `json:"pattern"`
+				Ref string `json:"$ref"`
 			} `json:"properties"`
 		} `json:"$defs"`
 	}
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatal(err)
 	}
+	// The Duration type owns its schema; every field points at it.
+	duration := schema.Definitions["Duration"]
+	if duration.Type != "string" || !strings.Contains(duration.Pattern, "(ns|us|µs|ms|s|m|h)") {
+		t.Fatalf("Duration def = type %q pattern %q", duration.Type, duration.Pattern)
+	}
 	for _, field := range [][2]string{
 		{"Interactive", "cacheTtl"}, {"Notes", "generatorTimeout"}, {"Notes", "refreshInterval"},
 		{"Providers", "cacheTtl"}, {"Providers", "timeout"},
 	} {
 		got := schema.Definitions[field[0]].Properties[field[1]]
-		if got.Type != "string" || !strings.Contains(got.Pattern, "(ns|us|µs|ms|s|m|h)") {
-			t.Fatalf("%s.%s schema = %+v", field[0], field[1], got)
+		if got.Ref != "#/$defs/Duration" {
+			t.Fatalf("%s.%s $ref = %q, want #/$defs/Duration", field[0], field[1], got.Ref)
 		}
 	}
 }
