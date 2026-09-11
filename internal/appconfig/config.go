@@ -18,6 +18,7 @@ type Config struct {
 }
 
 type Interactive struct {
+	Reader          []string             `json:"reader,omitempty" yaml:"reader,omitempty"`
 	CacheMaxEntries int                  `json:"cacheMaxEntries,omitempty" yaml:"cacheMaxEntries,omitempty" jsonschema:"minimum=0"`
 	CacheTTL        providerlib.Duration `json:"cacheTtl,omitempty" yaml:"cacheTtl,omitempty"`
 	Dock            string               `json:"dock,omitempty" yaml:"dock" jsonschema:"enum=left,enum=bottom"`

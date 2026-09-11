@@ -24,7 +24,7 @@ Enter
 Wait+Screen /check-release.sh/
 Sleep 7s
 Ctrl+H
-Type "j"
+Type "jj"
 Enter
 Wait+Screen /archives/
 Type "d"

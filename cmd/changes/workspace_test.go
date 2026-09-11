@@ -913,6 +913,7 @@ func TestInteractiveNotePathsUseChangesNoteAddArgv(t *testing.T) {
 		Files:   []workspaceview.File{{Path: "main.go", Hunks: []workspaceview.Hunk{{Lines: []workspaceview.Line{{Kind: "added", NewLine: 7}}}}}},
 		History: []workspaceview.HistoryEntry{}, Groups: []workspaceview.Group{}, Notes: []provider.Note{}, Threads: []workspaceview.NoteThread{}, Failures: []workspaceview.Failure{},
 	})
+	model.selected = 1
 	_ = model.noteCommand("Summary\nRationale", false)
 	_ = model.noteCommand("", true)
 	if len(captured) != 2 {

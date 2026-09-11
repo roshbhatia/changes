@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -29,6 +30,7 @@ import (
 )
 
 type workspaceLoaded struct {
+	epoch    uint64
 	snapshot workspaceview.Snapshot
 	err      error
 }
@@ -68,9 +70,10 @@ type interactiveComparisonWritten struct {
 type workspaceRefreshTick time.Time
 
 type navItem struct {
-	label string
-	path  string
-	oid   string
+	directory bool
+	label     string
+	path      string
+	oid       string
 }
 
 type interactiveDraftLocation struct {
@@ -84,40 +87,46 @@ type interactiveReviewRow struct {
 }
 
 type interactiveModel struct {
-	root            string
-	options         workspaceOptions
-	configured      appconfig.Config
-	store           workspaceview.Store
-	snapshot        workspaceview.Snapshot
-	viewport        viewport.Model
-	spinner         spinner.Model
-	note            textarea.Model
-	width           int
-	height          int
-	focus           string
-	mode            string
-	command         string
-	commands        []string
-	message         string
-	tab             string
-	restorePath     string
-	restoreOID      string
-	selected        int
-	line            int
-	helpOffset      int
-	markedOIDs      []string
-	draftBatches    []noteGeneratedComparison
-	generationSpecs []noteGenerationSpec
-	generator       provider.LoadedManifest
-	reviewIncluded  [][]bool
-	reviewCursor    int
-	editLocation    interactiveDraftLocation
-	writeBatches    []noteGeneratedComparison
-	writer          provider.LoadedManifest
-	writeResults    []interactiveWriteResult
-	writeIndex      int
-	loading         bool
-	showHelp        bool
+	refreshEpoch     *atomic.Uint64
+	collapsed        map[string]bool
+	previewPath      string
+	previewActive    bool
+	previewDirectory bool
+	previewEpoch     *atomic.Uint64
+	root             string
+	options          workspaceOptions
+	configured       appconfig.Config
+	store            workspaceview.Store
+	snapshot         workspaceview.Snapshot
+	viewport         viewport.Model
+	spinner          spinner.Model
+	note             textarea.Model
+	width            int
+	height           int
+	focus            string
+	mode             string
+	command          string
+	commands         []string
+	message          string
+	tab              string
+	restorePath      string
+	restoreOID       string
+	selected         int
+	line             int
+	helpOffset       int
+	markedOIDs       []string
+	draftBatches     []noteGeneratedComparison
+	generationSpecs  []noteGenerationSpec
+	generator        provider.LoadedManifest
+	reviewIncluded   [][]bool
+	reviewCursor     int
+	editLocation     interactiveDraftLocation
+	writeBatches     []noteGeneratedComparison
+	writer           provider.LoadedManifest
+	writeResults     []interactiveWriteResult
+	writeIndex       int
+	loading          bool
+	showHelp         bool
 }
 
 const maxInteractiveCommitSelection = 64
@@ -223,6 +232,7 @@ func newInteractiveModel(root string, options workspaceOptions, configured appco
 	input.SetWidth(72)
 	input.SetHeight(6)
 	return interactiveModel{
+		refreshEpoch: &atomic.Uint64{}, previewEpoch: &atomic.Uint64{}, collapsed: map[string]bool{},
 		root: root, options: options, configured: configured, store: store,
 		viewport: viewport.New(80, 20), spinner: spin, note: input,
 		focus: "main", mode: "normal", tab: "files", loading: true,
@@ -242,6 +252,10 @@ func (model interactiveModel) refreshTick() tea.Cmd {
 }
 
 func (model interactiveModel) refreshCommand() tea.Cmd {
+	epoch := uint64(0)
+	if model.refreshEpoch != nil {
+		epoch = model.refreshEpoch.Add(1)
+	}
 	root, options, configured := model.root, model.options, model.configured
 	previous := []provider.Note{}
 	if sameWorkspaceComparison(model.snapshot, options) {
@@ -249,7 +263,7 @@ func (model interactiveModel) refreshCommand() tea.Cmd {
 	}
 	return func() tea.Msg {
 		snapshot, err := buildWorkspaceSnapshotWithNotes(root, options, configured, previous)
-		return workspaceLoaded{snapshot: snapshot, err: err}
+		return workspaceLoaded{snapshot: snapshot, err: err, epoch: epoch}
 	}
 }
 
@@ -280,9 +294,13 @@ func (model interactiveModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.spinner, command = model.spinner.Update(value)
 		return model, command
 	case workspaceLoaded:
+		if value.epoch != 0 && model.refreshEpoch != nil && value.epoch != model.refreshEpoch.Load() {
+			return model, nil
+		}
 		model.loading = false
 		if value.err != nil {
 			model.message = value.err.Error()
+			model.snapshot.Freshness.State = "stale"
 			return model, nil
 		}
 		model.message = ""
@@ -290,6 +308,40 @@ func (model interactiveModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if err := model.store.SaveSnapshot(workspaceSlot(model.options), value.snapshot); err != nil {
 			model.message = "cache: " + err.Error()
 		}
+		if model.previewActive {
+			return model, model.scopePreviewCommand()
+		}
+		return model, nil
+	case readerFinished:
+		if value.err != nil {
+			model.message = "reader: " + value.err.Error()
+		}
+		return model, nil
+	case readerPrepared:
+		if value.err != nil {
+			model.message = "reader: " + value.err.Error()
+			return model, nil
+		}
+		if value.command == nil {
+			model.message = "selected comparison has no patch"
+			return model, nil
+		}
+		return model, tea.ExecProcess(value.command, func(err error) tea.Msg { return readerFinished{err} })
+	case scopePreviewLoaded:
+		if !model.previewActive || value.path != model.previewPath || value.epoch != model.currentRefreshEpoch() || model.previewEpoch != nil && value.previewEpoch != model.previewEpoch.Load() {
+			return model, nil
+		}
+		if value.err != nil {
+			model.message = value.err.Error()
+			model.snapshot.Freshness.State = "stale"
+			return model, nil
+		}
+		offset := model.viewport.YOffset
+		model.viewport.SetContent(value.rendered)
+		model.viewport.SetYOffset(offset)
+		model.snapshot.Freshness = value.freshness
+		model.snapshot.Failures = value.failures
+		model.message = ""
 		return model, nil
 	case workspaceRefreshTick:
 		command := model.refreshTick()
@@ -498,6 +550,17 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return model, command
 	}
 	switch binding.ID {
+	case "reader":
+		return model, model.readerCommand()
+	case "collapse", "expand":
+		items := model.navigatorItems()
+		if model.focus == "navigator" && model.selected < len(items) && items[model.selected].directory {
+			if model.collapsed == nil {
+				model.collapsed = map[string]bool{}
+			}
+			model.collapsed[items[model.selected].path] = binding.ID == "collapse"
+		}
+		return model, nil
 	case "quit":
 		_ = model.persistState()
 		return model, tea.Quit
@@ -516,9 +579,9 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.moveFocus(key.String())
 	case "navigator":
 		if model.configured.Interactive.Navigator == "tree" {
-			model.configured.Interactive.Navigator = "list"
+			model.setNavigator("list")
 		} else {
-			model.configured.Interactive.Navigator = "tree"
+			model.setNavigator("tree")
 		}
 	case "dock":
 		if model.configured.Interactive.Dock == "left" {
@@ -727,6 +790,8 @@ func (model interactiveModel) runPaletteCommand(command string) (tea.Model, tea.
 		}
 	}
 	switch fields[0] {
+	case "reader":
+		return model, model.readerCommand()
 	case "quit", "q":
 		_ = model.persistState()
 		return model, tea.Quit
@@ -747,7 +812,7 @@ func (model interactiveModel) runPaletteCommand(command string) (tea.Model, tea.
 		}
 	case "navigator":
 		if len(fields) == 2 && (fields[1] == "tree" || fields[1] == "list") {
-			model.configured.Interactive.Navigator = fields[1]
+			model.setNavigator(fields[1])
 			return model, nil
 		}
 	case "tab":
@@ -759,6 +824,7 @@ func (model interactiveModel) runPaletteCommand(command string) (tea.Model, tea.
 		}
 	case "view":
 		if len(fields) >= 2 && (fields[1] == "working" || fields[1] == "staged" || fields[1] == "commit") {
+			model.previewActive = false
 			model.options.view = fields[1]
 			if fields[1] == "commit" && len(fields) == 3 {
 				model.options.commit = fields[2]
@@ -861,8 +927,28 @@ func (model interactiveModel) noteCommand(message string, editor bool) tea.Cmd {
 }
 
 func (model *interactiveModel) setSnapshot(snapshot workspaceview.Snapshot) {
+	oldItems := model.navigatorItems()
+	if model.restorePath == "" && model.restoreOID == "" && model.selected < len(oldItems) {
+		model.restorePath, model.restoreOID = oldItems[model.selected].path, oldItems[model.selected].oid
+	}
+	offset := model.viewport.YOffset
 	model.snapshot = snapshot
-	model.viewport.SetContent(snapshot.Rendered)
+	if model.previewActive && model.previewPath != "" {
+		found := false
+		for _, file := range snapshot.Files {
+			if file.Path == model.previewPath || model.previewDirectory && strings.HasPrefix(file.Path, model.previewPath) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			model.previewActive = false
+		}
+	}
+	if !model.previewActive {
+		model.viewport.SetContent(snapshot.Rendered)
+		model.viewport.SetYOffset(offset)
+	}
 	visible := make(map[string]bool, len(snapshot.History))
 	for _, commit := range snapshot.History {
 		visible[commit.OID] = true
@@ -885,6 +971,7 @@ func (model *interactiveModel) setSnapshot(snapshot workspaceview.Snapshot) {
 			break
 		}
 	}
+	model.restorePath, model.restoreOID = "", ""
 }
 
 func (model *interactiveModel) resize() {
@@ -1011,6 +1098,9 @@ func (model interactiveModel) navigatorItems() []navItem {
 		}
 		return items
 	}
+	if model.configured.Interactive.Navigator == "tree" {
+		return model.directoryItems()
+	}
 	items := make([]navItem, 0, len(model.snapshot.Files))
 	for _, file := range model.snapshot.Files {
 		marker := "○"
@@ -1018,10 +1108,6 @@ func (model interactiveModel) navigatorItems() []navItem {
 			marker = "◆"
 		}
 		label := marker + " " + file.Path + fmt.Sprintf(" +%d -%d", file.Added, file.Deleted)
-		if model.configured.Interactive.Navigator == "tree" {
-			depth := strings.Count(file.Path, "/")
-			label = strings.Repeat("│  ", depth) + "└─ " + marker + " " + filepath.Base(file.Path)
-		}
 		items = append(items, navItem{path: file.Path, label: label})
 	}
 	return items
@@ -1065,6 +1151,7 @@ func (model *interactiveModel) moveFocus(key string) {
 }
 
 func (model *interactiveModel) cycleView() {
+	model.previewActive = false
 	switch model.options.view {
 	case "working":
 		model.options.view = "staged"
@@ -1148,29 +1235,36 @@ func (model interactiveModel) activateSelection() (tea.Model, tea.Cmd) {
 	}
 	item := items[model.selected]
 	if item.oid != "" {
+		model.previewActive = false
 		model.options.view, model.options.commit, model.loading = "commit", item.oid, true
 		model.focus = "main"
 		return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
 	}
-	if item.path != "" {
-		lines := strings.Split(model.snapshot.Rendered, "\n")
-		for index, line := range lines {
-			if strings.Contains(line, item.path) || strings.Contains(line, filepath.Base(item.path)) {
-				model.viewport.SetYOffset(index)
-				break
-			}
-		}
+	if item.path != "" || item.directory {
+		model.previewPath, model.previewActive = item.path, true
+		model.previewDirectory = item.directory
+		model.viewport.GotoTop()
 		model.focus = "main"
+		return model, model.scopePreviewCommand()
 	}
 	return model, nil
 }
 
 func (model interactiveModel) selectedFile() string {
+	if model.previewActive && model.focus == "main" {
+		if model.previewDirectory {
+			return ""
+		}
+		return model.previewPath
+	}
 	if model.activeTab() != "files" {
 		return ""
 	}
 	items := model.navigatorItems()
 	if len(items) == 0 || model.selected >= len(items) {
+		return ""
+	}
+	if items[model.selected].directory {
 		return ""
 	}
 	return items[model.selected].path

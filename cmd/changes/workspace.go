@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -211,6 +212,18 @@ func buildWorkspaceSnapshot(root string, options workspaceOptions, configured ap
 }
 
 func buildWorkspaceSnapshotWithNotes(root string, options workspaceOptions, configured appconfig.Config, previous []provider.Note) (workspaceview.Snapshot, error) {
+	return buildWorkspaceScopedSnapshot(root, options, configured, previous, nil)
+}
+
+func workspaceSource(root string, options workspaceOptions) (source.Spec, error) {
+	if options.view == "commit" {
+		spec, _, err := source.CommitComparison(root, options.commit)
+		return spec, err
+	}
+	return source.Spec{Dir: root, Staged: options.view == "staged"}, nil
+}
+
+func buildWorkspaceScopedSnapshot(root string, options workspaceOptions, configured appconfig.Config, previous []provider.Note, paths []string) (workspaceview.Snapshot, error) {
 	spec := source.Spec{Dir: root}
 	comparison := workspaceview.Comparison{Kind: options.view, Layout: options.layout}
 	if options.view == "staged" {
@@ -259,7 +272,29 @@ func buildWorkspaceSnapshotWithNotes(root string, options workspaceOptions, conf
 	if options.refresh {
 		view.providerCache = provider.CachePolicy{}
 	}
-	rendered, noteValues, analysis, err := view.renderPatchesWithAnalysis([]string{patch}, noteLayer{values: append([]provider.Note(nil), previous...)}, view.notes)
+	notes := noteLayer{values: append([]provider.Note(nil), previous...)}
+	refreshNotes := view.notes
+	if len(paths) > 0 {
+		if refreshNotes {
+			ctx, cancel := context.WithTimeout(context.Background(), view.budget)
+			notes = refreshNoteLayer(notes, view.noteContext(ctx, []string{patch}))
+			cancel()
+		}
+		patch = scopePatch(patch, paths)
+		visible := notePathsInPatch(patch)
+		filtered := []provider.Note{}
+		for _, note := range notes.values {
+			for _, path := range visible {
+				if sameDiffPath(noteDisplayPlacement(note).Path, path) {
+					filtered = append(filtered, note)
+					break
+				}
+			}
+		}
+		notes.values = filtered
+		refreshNotes = false
+	}
+	rendered, noteValues, analysis, err := view.renderPatchesWithAnalysis([]string{patch}, notes, refreshNotes)
 	if err != nil {
 		return workspaceview.Snapshot{}, err
 	}

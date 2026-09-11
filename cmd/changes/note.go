@@ -1554,6 +1554,14 @@ func splitPatchFiles(patch string) []patchFile {
 			current.oldPath = patchHeaderPath(line, "--- ", "a/")
 		} else if inHeaders && strings.HasPrefix(line, "+++ ") {
 			current.newPath = patchHeaderPath(line, "+++ ", "b/")
+		} else if inHeaders && strings.HasPrefix(line, "rename from ") {
+			current.oldPath = patchHeaderPath(line, "rename from ", "")
+		} else if inHeaders && strings.HasPrefix(line, "rename to ") {
+			current.newPath = patchHeaderPath(line, "rename to ", "")
+		} else if inHeaders && strings.HasPrefix(line, "copy from ") {
+			current.oldPath = patchHeaderPath(line, "copy from ", "")
+		} else if inHeaders && strings.HasPrefix(line, "copy to ") {
+			current.newPath = patchHeaderPath(line, "copy to ", "")
 		}
 	}
 	flush()
@@ -1580,8 +1588,14 @@ func combinedDiffPrefix(line string) string {
 }
 
 func diffHeaderPaths(line string) (string, string) {
-	tokens := diffHeaderTokens(strings.TrimSuffix(strings.TrimPrefix(line, "diff --git "), "\n"))
+	value := strings.TrimSuffix(strings.TrimPrefix(line, "diff --git "), "\n")
+	tokens := diffHeaderTokens(value)
 	if len(tokens) != 2 {
+		for index := 0; index < len(value); index++ {
+			if strings.HasPrefix(value[index:], " b/") && strings.TrimPrefix(value[:index], "a/") == value[index+3:] {
+				return value[index+3:], value[index+3:]
+			}
+		}
 		return "", ""
 	}
 	return filepath.ToSlash(strings.TrimPrefix(tokens[0], "a/")),
@@ -1633,6 +1647,9 @@ func diffHeaderTokens(value string) []string {
 
 func patchHeaderPath(line, marker, sidePrefix string) string {
 	value := strings.TrimSuffix(strings.TrimPrefix(line, marker), "\n")
+	if marker == "--- " || marker == "+++ " {
+		value = strings.TrimSuffix(value, "\t")
+	}
 	if strings.HasPrefix(value, "\"") {
 		decoded, err := strconv.Unquote(value)
 		if err != nil {

@@ -166,6 +166,15 @@ func (s Spec) Diff() (string, error) {
 	return s.runDiff("never")
 }
 
+// RawDiff preserves Git's patch bytes, including trailing whitespace and newline.
+func (s Spec) RawDiff() (string, error) {
+	args, err := s.args("never")
+	if err != nil {
+		return "", err
+	}
+	return s.runDiffArgsRaw(args)
+}
+
 // NoteDiff returns the raw tree delta used to identify a committed comparison.
 func (s Spec) NoteDiff() (string, error) {
 	s.NoLazyFetch = true
@@ -363,6 +372,11 @@ func (s Spec) runDiff(color string) (string, error) {
 }
 
 func (s Spec) runDiffArgs(args []string) (string, error) {
+	output, err := s.runDiffArgsRaw(args)
+	return strings.TrimSpace(output), err
+}
+
+func (s Spec) runDiffArgsRaw(args []string) (string, error) {
 	command := s.command(args...)
 	stdout := limitedBuffer{limit: MaxPatchBytes}
 	var stderr bytes.Buffer
@@ -374,7 +388,7 @@ func (s Spec) runDiffArgs(args []string) (string, error) {
 	if stdout.exceeded {
 		return "", fmt.Errorf("git patch exceeds %d bytes", MaxPatchBytes)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }
 
 func (s Spec) command(arguments ...string) *exec.Cmd {

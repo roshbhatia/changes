@@ -16,6 +16,9 @@ var interactiveKeyCatalog = sharedkeymap.Must(
 		Display: "ctrl+d / ctrl+u", Short: "page", Description: "scroll the changes pane by half a page",
 	},
 	sharedkeymap.Binding{ID: "activate", Keys: []string{"enter"}, Short: "open", Description: "open the selected file or commit"},
+	sharedkeymap.Binding{ID: "reader", Keys: []string{"o"}, Short: "reader", Description: "open the selected scope in the external patch reader"},
+	sharedkeymap.Binding{ID: "collapse", Keys: []string{"h"}, Short: "collapse", Description: "collapse the selected directory"},
+	sharedkeymap.Binding{ID: "expand", Keys: []string{"l"}, Short: "expand", Description: "expand the selected directory"},
 	sharedkeymap.Binding{
 		ID: "tab", Keys: []string{"tab", "shift+tab"},
 		Display: "tab / shift+tab", Short: "tab", Description: "move through tabs inside the focused pane",
@@ -54,7 +57,7 @@ var interactivePaletteValues = map[string][]string{
 }
 
 func interactivePaletteCommands() []string {
-	return []string{"dock", "layout", "navigator", "note", "quit", "refresh", "tab", "view"}
+	return []string{"dock", "layout", "navigator", "note", "quit", "reader", "refresh", "tab", "view"}
 }
 
 func interactiveBindingHint(id string) string {

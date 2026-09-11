@@ -40,6 +40,12 @@
     },
     "Interactive": {
       "properties": {
+        "reader": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "cacheMaxEntries": {
           "type": "integer",
           "minimum": 0

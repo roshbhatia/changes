@@ -50,7 +50,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          version = "0.12.3";
+          version = "0.13.0";
           mkPackage =
             {
               name,
@@ -515,6 +515,7 @@
               pkgs.cue
               pkgs.delta
               pkgs.difftastic
+              pkgs.diffnav
               pkgs.ripgrep
               pkgs.shellcheck
               pkgs.shfmt

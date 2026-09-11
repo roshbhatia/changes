@@ -179,6 +179,19 @@ use `interactive.noteInput`, or use `n` for the popup and `e` for `$EDITOR`.
 Changes saves layout and exact selection under `XDG_STATE_HOME`. It keeps
 replaceable snapshots under `XDG_CACHE_HOME`.
 
+In tree mode, `Enter` previews a file or directory. `h` collapses a directory
+and `l` expands it. The root row previews the complete comparison. `Ctrl-u/d`
+scrolls the changes pane while the navigator keeps focus. Refresh retains the
+selected path and reports stale data when Git or a provider fails.
+
+Set `interactive.reader: [diffnav]` to use an installed diffnav as an external
+reader. Press `o` or run `:reader` to open the selected scope. When the changes
+pane has focus, the reader receives the displayed scope. The command receives
+an ordinary Git patch on stdin and runs in the repository directory. Closing
+it returns to the same Changes selection and scroll position. Commands use an
+argument array; shell syntax is not expanded. The reader is optional and has
+no default command. See the [patch reader recording](examples/patch-reader/README.md).
+
 `changes workspace` emits `changes.workspace/v1` JSON for external clients.
 The snapshot contains the repository and comparison identity, freshness,
 logical groups, structured hunk lines, note IDs, complete threads, provenance,

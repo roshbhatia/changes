@@ -8,7 +8,6 @@ while IFS= read -r example; do
   example_names+=("$(basename "$example")")
 done < <(find examples -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)
 
-
 demo_fingerprint() {
   local example="$1"
   {
@@ -20,9 +19,9 @@ demo_fingerprint() {
       hack/recipe-fixture.py \
       hack/example-demos.sh
     case "$example" in
-    agent-review-notes) printf '%s\n' hack/demo-codex.sh ;;
-    github-pr-notes) printf '%s\n' hack/demo-gh.sh ;;
-    neovim-notes) find integrations/neovim -type f -name '*.lua' -print | LC_ALL=C sort ;;
+      agent-review-notes) printf '%s\n' hack/demo-codex.sh ;;
+      github-pr-notes) printf '%s\n' hack/demo-gh.sh ;;
+      neovim-notes) find integrations/neovim -type f -name '*.lua' -print | LC_ALL=C sort ;;
     esac
     find "examples/${example}" -maxdepth 1 -type f \
       ! -name '.demo.sha256' -print | LC_ALL=C sort
@@ -61,7 +60,7 @@ check_demo() {
   local expected
   local recorded
   expected=$(demo_fingerprint "$example")
-  recorded=$(cat "$repo_dir/examples/$example/.demo.sha256" 2>/dev/null || true)
+  recorded=$(cat "$repo_dir/examples/$example/.demo.sha256" 2> /dev/null || true)
   if [[ $recorded != "$expected" ]] || ! demo_is_valid "$example"; then
     echo "ERROR: ${example} demo is stale; run nix develop -c ./hack/example-demos.sh ${example}" >&2
     return 1
@@ -75,7 +74,7 @@ refresh_fingerprints() {
       echo "ERROR: ${example} demo is missing or invalid; regenerate it before refreshing fingerprints" >&2
       return 1
     fi
-    demo_fingerprint "$example" >"$repo_dir/examples/$example/.demo.sha256"
+    demo_fingerprint "$example" > "$repo_dir/examples/$example/.demo.sha256"
   done
 }
 
@@ -149,77 +148,85 @@ render_demo() {
     "$environment_root/state"
 
   case "$example" in
-  logical-change-groups)
-    init_group_repository "$repository"
-    ;;
-  provider-validation)
-    working_directory="$repo_dir"
-    ;;
-  workspace-review)
-    working_directory="$environment_root/workspace"
-    setup_workspace "$working_directory"
-    ;;
-  *)
-    init_repository "$repository"
-    ;;
+    patch-reader)
+      git clone --quiet --no-hardlinks "$repo_dir" "$repository"
+      git -C "$repository" checkout --quiet --detach 6147beb23c88864180be2cccdec9a52dd1a3a6fc
+      ;;
+    logical-change-groups)
+      init_group_repository "$repository"
+      ;;
+    provider-validation)
+      working_directory="$repo_dir"
+      ;;
+    workspace-review)
+      working_directory="$environment_root/workspace"
+      setup_workspace "$working_directory"
+      ;;
+    *)
+      init_repository "$repository"
+      ;;
   esac
 
   case "$example" in
-  custom-difftool)
-    mkdir -p "$environment_root/config/changes"
-    printf '%s\n' \
-      'color: always' \
-      'diff:' \
-      '  engine: filter' \
-      '  layout: unified' \
-      '  filter: [delta, --paging=never]' \
-      "  difftool: [difft, --color, always, --display, side-by-side, $difftool_local, $difftool_remote]" \
-      >"$environment_root/config/changes/config.yaml"
-    mkdir -p "$repository/.demo"
-    git -C "$repository" show HEAD:internal/auth/token.go >"$repository/.demo/before.go"
-    cp "$repository/internal/auth/token.go" "$repository/.demo/after.go"
-    printf '%s\n' '.demo/' >>"$repository/.git/info/exclude"
-    ;;
-  interactive-workspace)
-    python3 "$repo_dir/hack/recipe-fixture.py" "$repository" history
-    mkdir -p "$environment_root/config/changes"
-    printf '%s\n' 'notes:' '  store: local-notes' >"$environment_root/config/changes/config.yaml"
-    ;;
-  github-pr-notes)
-    git -C "$repository" add internal/auth/token.go
-    git -C "$repository" commit -qm 'validate bearer token boundaries'
-    git -C "$repository" remote add origin https://github.com/replay-fixtures/checkout-service.git
-    base_sha=$(git -C "$repository" rev-parse HEAD^)
-    head_sha=$(git -C "$repository" rev-parse HEAD)
-    ;;
-  git-notes)
-    git -C "$repository" add internal/auth/token.go
-    git -C "$repository" commit -qm 'validate bearer token boundaries'
-    git init -q --bare "$environment_root/origin.git"
-    git -C "$repository" remote add origin "$environment_root/origin.git"
-    git -C "$repository" push -q -u origin HEAD
-    git clone -q "$environment_root/origin.git" "$environment_root/reviewer"
-    base_sha=$(git -C "$repository" rev-parse HEAD^)
-    head_sha=$(git -C "$repository" rev-parse HEAD)
-    extra_path="$git_notes_path/bin:$extra_path"
-    ;;
-  logical-change-groups)
-    mkdir -p "$environment_root/config/changes/providers/demo-groups"
-    cp "$repo_dir/examples/logical-change-groups/provider" "$environment_root/config/changes/providers/demo-groups/provider"
-    cp "$repo_dir/examples/logical-change-groups/provider.yaml" "$environment_root/config/changes/providers/demo-groups/provider.yaml"
-    ;;
-  manual-notes)
-    mkdir -p "$environment_root/config/changes"
-    printf '%s\n' 'notes:' '  store: local-notes' >"$environment_root/config/changes/config.yaml"
-    ;;
-  neovim-notes)
-    mkdir -p "$environment_root/config/changes"
-    printf '%s\n' 'notes:' '  store: local-notes' >"$environment_root/config/changes/config.yaml"
-    mkdir -p "$environment_root/config/nvim"
-    printf '%s\n' 'vim.opt.runtimepath:prepend(vim.env.DEMO_NEOVIM_PLUGIN)' \
-      'require("changes.notes").setup({ provider = "local-notes" })' \
-      >"$environment_root/config/nvim/init.lua"
-    ;;
+    patch-reader)
+      mkdir -p "$environment_root/config/changes"
+      printf '%s\n' 'interactive:' '  reader: [diffnav]' > "$environment_root/config/changes/config.yaml"
+      ;;
+    custom-difftool)
+      mkdir -p "$environment_root/config/changes"
+      printf '%s\n' \
+        'color: always' \
+        'diff:' \
+        '  engine: filter' \
+        '  layout: unified' \
+        '  filter: [delta, --paging=never]' \
+        "  difftool: [difft, --color, always, --display, side-by-side, $difftool_local, $difftool_remote]" \
+        > "$environment_root/config/changes/config.yaml"
+      mkdir -p "$repository/.demo"
+      git -C "$repository" show HEAD:internal/auth/token.go > "$repository/.demo/before.go"
+      cp "$repository/internal/auth/token.go" "$repository/.demo/after.go"
+      printf '%s\n' '.demo/' >> "$repository/.git/info/exclude"
+      ;;
+    interactive-workspace)
+      python3 "$repo_dir/hack/recipe-fixture.py" "$repository" history
+      mkdir -p "$environment_root/config/changes"
+      printf '%s\n' 'notes:' '  store: local-notes' > "$environment_root/config/changes/config.yaml"
+      ;;
+    github-pr-notes)
+      git -C "$repository" add internal/auth/token.go
+      git -C "$repository" commit -qm 'validate bearer token boundaries'
+      git -C "$repository" remote add origin https://github.com/replay-fixtures/checkout-service.git
+      base_sha=$(git -C "$repository" rev-parse HEAD^)
+      head_sha=$(git -C "$repository" rev-parse HEAD)
+      ;;
+    git-notes)
+      git -C "$repository" add internal/auth/token.go
+      git -C "$repository" commit -qm 'validate bearer token boundaries'
+      git init -q --bare "$environment_root/origin.git"
+      git -C "$repository" remote add origin "$environment_root/origin.git"
+      git -C "$repository" push -q -u origin HEAD
+      git clone -q "$environment_root/origin.git" "$environment_root/reviewer"
+      base_sha=$(git -C "$repository" rev-parse HEAD^)
+      head_sha=$(git -C "$repository" rev-parse HEAD)
+      extra_path="$git_notes_path/bin:$extra_path"
+      ;;
+    logical-change-groups)
+      mkdir -p "$environment_root/config/changes/providers/demo-groups"
+      cp "$repo_dir/examples/logical-change-groups/provider" "$environment_root/config/changes/providers/demo-groups/provider"
+      cp "$repo_dir/examples/logical-change-groups/provider.yaml" "$environment_root/config/changes/providers/demo-groups/provider.yaml"
+      ;;
+    manual-notes)
+      mkdir -p "$environment_root/config/changes"
+      printf '%s\n' 'notes:' '  store: local-notes' > "$environment_root/config/changes/config.yaml"
+      ;;
+    neovim-notes)
+      mkdir -p "$environment_root/config/changes"
+      printf '%s\n' 'notes:' '  store: local-notes' > "$environment_root/config/changes/config.yaml"
+      mkdir -p "$environment_root/config/nvim"
+      printf '%s\n' 'vim.opt.runtimepath:prepend(vim.env.DEMO_NEOVIM_PLUGIN)' \
+        'require("changes.notes").setup({ provider = "local-notes" })' \
+        > "$environment_root/config/nvim/init.lua"
+      ;;
   esac
 
   (
@@ -262,7 +269,7 @@ render_demo() {
     return 1
   fi
   install -m 0644 "$output" "$repo_dir/examples/$example/demo.gif"
-  demo_fingerprint "$example" >"$repo_dir/examples/$example/.demo.sha256"
+  demo_fingerprint "$example" > "$repo_dir/examples/$example/.demo.sha256"
 }
 
 for example in "${example_names[@]}"; do
