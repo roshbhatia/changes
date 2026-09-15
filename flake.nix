@@ -110,6 +110,11 @@
               };
               passthru.runtimeInputs = runtimeInputs;
             };
+          ws = mkPackage {
+            name = "ws";
+            subPackage = "./cmd/ws";
+            runtimeInputs = [ pkgs.git ];
+          };
           changes = mkPackage {
             name = "changes";
             subPackage = "./cmd/changes";
@@ -166,6 +171,7 @@
             name = "changes-full-${version}";
             paths = [
               changes
+              ws
               extras
             ];
             nativeBuildInputs = [ pkgs.makeWrapper ];
@@ -181,7 +187,12 @@
           neovimPlugin = import ./integrations/neovim/package.nix { inherit pkgs version; };
         in
         {
-          inherit changes extras full;
+          inherit
+            ws
+            changes
+            extras
+            full
+            ;
           neovim-plugin = neovimPlugin;
           default = changes;
         }

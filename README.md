@@ -454,6 +454,19 @@ Validate provider commands and JSON behavior
 
 <!-- END GENERATED:cli -->
 
+## Workspace inspection
+
+The `ws` companion inspects every repository in a workspace without starting an interactive viewer.
+
+```sh
+nix run github:roshbhatia/changes#ws -- roots
+ws changes --json
+ws roots | ws log -n 5 -
+```
+
+`ws health` reports the detected boundary. Existing sysinit `ws` calls retain their arguments and output.
+Workspace discovery uses `go-utils`, shared with Seshy and Changes.
+
 ## Development
 
 ```bash
