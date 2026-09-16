@@ -253,6 +253,8 @@ _changes() {
       'interactive:--view='*) continue ;;
       'interactive:--width') consume_value=1; continue ;;
       'interactive:--width='*) continue ;;
+      'interactive:--root') consume_value=1; continue ;;
+      'interactive:--root='*) continue ;;
       'workspace:--commit') consume_value=1; continue ;;
       'workspace:--commit='*) continue ;;
       'workspace:--config') consume_value=1; continue ;;
@@ -411,6 +413,9 @@ _changes() {
         '--refresh[Bypass cached workspace and provider results]' \
         '--view[Git comparison view]:value:__changes_completion_values_7' \
         '--width[Render width]:value:' \
+        '(-r)--recursive[Browse all workspace repositories]' \
+        '--root[Directory used to resolve repositories]:value:' \
+        '--staged[Show staged changes]' \
         '*:argument:'
 
       ;;

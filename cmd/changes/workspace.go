@@ -25,6 +25,8 @@ import (
 )
 
 type workspaceOptions struct {
+	recursive    bool
+	root         string
 	configPath   string
 	color        string
 	view         string
@@ -57,6 +59,13 @@ func workspaceCommandFlags(interactive bool) []completion.Flag {
 		{Name: "view", Description: "Git comparison view", Value: true, Values: []string{"working", "staged", "commit"}},
 		{Name: "width", Description: "Render width", Value: true},
 	}
+	if interactive {
+		flags = append(flags,
+			completion.Flag{Name: "recursive", Short: "r", Description: "Browse all workspace repositories"},
+			completion.Flag{Name: "root", Description: "Directory used to resolve repositories", Value: true},
+			completion.Flag{Name: "staged", Description: "Show staged changes"},
+		)
+	}
 	if !interactive {
 		flags = append(flags,
 			completion.Flag{Name: "interval", Description: "Watch interval", Value: true},
@@ -79,8 +88,13 @@ func parseWorkspaceOptions(args []string, interactive bool) (workspaceOptions, a
 		return workspaceOptions{}, appconfig.Config{}, err
 	}
 	options := workspaceOptions{configPath: *configPath, color: "never"}
+	var staged bool
 	if interactive {
 		options.color = "always"
+		flags.BoolVar(&options.recursive, "recursive", false, flagDescription(metadata, "recursive"))
+		flags.BoolVar(&options.recursive, "r", false, shortFlagDescription(metadata, "r"))
+		flags.StringVar(&options.root, "root", "", flagDescription(metadata, "root"))
+		flags.BoolVar(&staged, "staged", false, flagDescription(metadata, "staged"))
 	}
 	flags.StringVar(&options.view, "view", "working", flagDescription(metadata, "view"))
 	flags.StringVar(&options.commit, "commit", "HEAD", flagDescription(metadata, "commit"))
@@ -103,6 +117,12 @@ func parseWorkspaceOptions(args []string, interactive bool) (workspaceOptions, a
 	}
 	if flags.NArg() != 0 {
 		return workspaceOptions{}, appconfig.Config{}, fmt.Errorf("%s accepts only flags", metadataName)
+	}
+	if staged {
+		if argumentPresent(args, "view") && options.view != "staged" {
+			return workspaceOptions{}, appconfig.Config{}, errors.New("--staged conflicts with --view")
+		}
+		options.view = "staged"
 	}
 	if options.view != "working" && options.view != "staged" && options.view != "commit" {
 		return workspaceOptions{}, appconfig.Config{}, errors.New("--view must be working, staged, or commit")

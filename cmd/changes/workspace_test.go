@@ -933,14 +933,36 @@ func TestInteractiveNotePathsUseChangesNoteAddArgv(t *testing.T) {
 }
 
 func TestInteractiveProcessRestoresAlternateScreen(t *testing.T) {
-	repository := t.TempDir()
+	for _, recursive := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recursive=%t", recursive), func(t *testing.T) {
+			testInteractiveProcess(t, recursive)
+		})
+	}
+}
+
+func testInteractiveProcess(t *testing.T, recursive bool) {
+	t.Helper()
+	boundary := t.TempDir()
+	repository := filepath.Join(boundary, "a")
 	prepareRepository(t, repository, map[string]string{"main.go": "before\n"})
 	head := strings.TrimSpace(gitWorkspaceOutput(t, repository, "rev-parse", "HEAD"))
 	if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte("after\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(os.Args[0], "-test.run=TestMainHelperProcess", "--", "interactive", "--no-notes", "--no-symbols", "--no-calls", "--no-groups", "--quiet")
+	arguments := []string{"-test.run=TestMainHelperProcess", "--", "interactive", "--no-notes", "--no-symbols", "--no-calls", "--no-groups", "--quiet"}
+	if recursive {
+		second := filepath.Join(boundary, "b")
+		prepareRepository(t, second, map[string]string{"second.txt": "before\n"})
+		if err := os.WriteFile(filepath.Join(second, "second.txt"), []byte("second repository change\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		arguments = append(arguments, "-r", "--root", boundary)
+	}
+	command := exec.Command(os.Args[0], arguments...)
 	command.Dir = repository
+	if recursive {
+		command.Dir = boundary
+	}
 	command.Env = append(os.Environ(),
 		"GO_WANT_MAIN_HELPER=1",
 		"XDG_CACHE_HOME="+filepath.Join(t.TempDir(), "cache"),
@@ -960,11 +982,13 @@ func TestInteractiveProcessRestoresAlternateScreen(t *testing.T) {
 	outputChannel := make(chan []byte, 1)
 	loadedChannel := make(chan struct{}, 1)
 	historyChannel := make(chan struct{}, 1)
+	repositoryChannel := make(chan struct{}, 1)
 	go func() {
 		var output bytes.Buffer
 		buffer := make([]byte, 4096)
 		loadedSeen := false
 		historySeen := false
+		repositorySeen := false
 		for {
 			count, readErr := terminal.Read(buffer)
 			if count > 0 {
@@ -979,6 +1003,10 @@ func TestInteractiveProcessRestoresAlternateScreen(t *testing.T) {
 				if !loadedSeen && bytes.Contains(output.Bytes(), []byte("main.go")) && bytes.Contains(output.Bytes(), []byte("after")) {
 					loadedSeen = true
 					loadedChannel <- struct{}{}
+				}
+				if !repositorySeen && bytes.Contains(output.Bytes(), []byte("second repository change")) && bytes.Contains(output.Bytes(), []byte("second.txt")) {
+					repositorySeen = true
+					repositoryChannel <- struct{}{}
 				}
 				historyRow := []byte("[ ] " + head[:8] + " fixture")
 				if !historySeen && bytes.Contains(output.Bytes(), historyRow) {
@@ -1014,6 +1042,20 @@ func TestInteractiveProcessRestoresAlternateScreen(t *testing.T) {
 		_ = terminal.Close()
 		output := <-outputChannel
 		t.Fatalf("encoded mouse click did not render the known History row: %q", output)
+	}
+	if recursive {
+		if _, err := terminal.Write([]byte("\x1b[<0;19;3M\x1b[B\r")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-repositoryChannel:
+		case <-time.After(5 * time.Second):
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			_ = terminal.Close()
+			output := <-outputChannel
+			t.Fatalf("repository selection did not load the second diff: %q", output)
+		}
 	}
 	if _, err := terminal.Write([]byte("q")); err != nil {
 		t.Fatal(err)

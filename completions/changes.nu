@@ -42,6 +42,9 @@ export extern "changes interactive" [
   --refresh # Bypass cached workspace and provider results
   --view: string@"__changes_completion_values_7" # Git comparison view
   --width: string # Render width
+  --recursive(-r) # Browse all workspace repositories
+  --root: string # Directory used to resolve repositories
+  --staged # Show staged changes
   ...args: string@"__changes_completion_none"
 ]
 

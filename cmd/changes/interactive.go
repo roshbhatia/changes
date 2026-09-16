@@ -70,10 +70,11 @@ type interactiveComparisonWritten struct {
 type workspaceRefreshTick time.Time
 
 type navItem struct {
-	directory bool
-	label     string
-	path      string
-	oid       string
+	repository string
+	directory  bool
+	label      string
+	path       string
+	oid        string
 }
 
 type interactiveDraftLocation struct {
@@ -87,46 +88,49 @@ type interactiveReviewRow struct {
 }
 
 type interactiveModel struct {
-	refreshEpoch     *atomic.Uint64
-	collapsed        map[string]bool
-	previewPath      string
-	previewActive    bool
-	previewDirectory bool
-	previewEpoch     *atomic.Uint64
-	root             string
-	options          workspaceOptions
-	configured       appconfig.Config
-	store            workspaceview.Store
-	snapshot         workspaceview.Snapshot
-	viewport         viewport.Model
-	spinner          spinner.Model
-	note             textarea.Model
-	width            int
-	height           int
-	focus            string
-	mode             string
-	command          string
-	commands         []string
-	message          string
-	tab              string
-	restorePath      string
-	restoreOID       string
-	selected         int
-	line             int
-	helpOffset       int
-	markedOIDs       []string
-	draftBatches     []noteGeneratedComparison
-	generationSpecs  []noteGenerationSpec
-	generator        provider.LoadedManifest
-	reviewIncluded   [][]bool
-	reviewCursor     int
-	editLocation     interactiveDraftLocation
-	writeBatches     []noteGeneratedComparison
-	writer           provider.LoadedManifest
-	writeResults     []interactiveWriteResult
-	writeIndex       int
-	loading          bool
-	showHelp         bool
+	repositories       []string
+	repositoryBoundary string
+	initialCommit      string
+	refreshEpoch       *atomic.Uint64
+	collapsed          map[string]bool
+	previewPath        string
+	previewActive      bool
+	previewDirectory   bool
+	previewEpoch       *atomic.Uint64
+	root               string
+	options            workspaceOptions
+	configured         appconfig.Config
+	store              workspaceview.Store
+	snapshot           workspaceview.Snapshot
+	viewport           viewport.Model
+	spinner            spinner.Model
+	note               textarea.Model
+	width              int
+	height             int
+	focus              string
+	mode               string
+	command            string
+	commands           []string
+	message            string
+	tab                string
+	restorePath        string
+	restoreOID         string
+	selected           int
+	line               int
+	helpOffset         int
+	markedOIDs         []string
+	draftBatches       []noteGeneratedComparison
+	generationSpecs    []noteGenerationSpec
+	generator          provider.LoadedManifest
+	reviewIncluded     [][]bool
+	reviewCursor       int
+	editLocation       interactiveDraftLocation
+	writeBatches       []noteGeneratedComparison
+	writer             provider.LoadedManifest
+	writeResults       []interactiveWriteResult
+	writeIndex         int
+	loading            bool
+	showHelp           bool
 }
 
 const maxInteractiveCommitSelection = 64
@@ -161,10 +165,12 @@ func runInteractive(args []string) {
 	if !sharedterminal.IsTTY(os.Stdin) || !sharedterminal.IsTTY(os.Stdout) {
 		fail(errors.New("interactive mode requires a terminal; use changes workspace for external clients"))
 	}
-	root, err := currentRepositoryRoot()
+	roots, boundary, err := interactiveRepositories(options)
 	if err != nil {
 		fail(err)
 	}
+	root := roots[0]
+	initialCommit := options.commit
 	store, err := workspaceview.DefaultStore(configured.Interactive.CacheMaxEntries)
 	if err != nil {
 		fail(err)
@@ -177,7 +183,7 @@ func runInteractive(args []string) {
 		if !argumentPresent(args, "layout") {
 			options.layout = state.Layout
 		}
-		if !argumentPresent(args, "view") {
+		if !argumentPresent(args, "view") && !argumentPresent(args, "staged") {
 			options.view = state.View
 			if state.SelectedOID != "" {
 				options.commit = state.SelectedOID
@@ -185,6 +191,7 @@ func runInteractive(args []string) {
 		}
 	}
 	model := newInteractiveModel(root, options, configured, store)
+	model.repositories, model.repositoryBoundary, model.initialCommit = roots, boundary, initialCommit
 	if found {
 		model.restoreState(state)
 	}
@@ -201,6 +208,9 @@ func runInteractive(args []string) {
 		model.width, model.height = width, height
 		model.resize()
 		model.options.width = model.diffWidth()
+	}
+	if options.recursive {
+		model.tab, model.focus, model.selected = "repositories", "navigator", 0
 	}
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	result, err := program.Run()
@@ -233,7 +243,7 @@ func newInteractiveModel(root string, options workspaceOptions, configured appco
 	input.SetHeight(6)
 	return interactiveModel{
 		refreshEpoch: &atomic.Uint64{}, previewEpoch: &atomic.Uint64{}, collapsed: map[string]bool{},
-		root: root, options: options, configured: configured, store: store,
+		root: root, options: options, configured: configured, store: store, initialCommit: options.commit,
 		viewport: viewport.New(80, 20), spinner: spin, note: input,
 		focus: "main", mode: "normal", tab: "files", loading: true,
 	}
@@ -707,6 +717,8 @@ func (model interactiveModel) handleMouse(mouse tea.MouseMsg) (tea.Model, tea.Cm
 				switch {
 				case relativeX >= 0 && relativeX < len("Files"):
 					model.setTab("files")
+				case model.options.recursive && relativeX >= len("Files  History  ") && relativeX < len("Files  History  Repos"):
+					model.setTab("repositories")
 				case relativeX >= len("Files  ") && relativeX < len("Files  History"):
 					model.setTab("history")
 				}
@@ -816,8 +828,11 @@ func (model interactiveModel) runPaletteCommand(command string) (tea.Model, tea.
 			return model, nil
 		}
 	case "tab":
-		if len(fields) == 2 && (fields[1] == "files" || fields[1] == "history") {
+		if len(fields) == 2 && (fields[1] == "files" || fields[1] == "history" || fields[1] == "repositories" && model.options.recursive) {
 			model.tab = fields[1]
+			if fields[1] == "repositories" {
+				model.focus = "navigator"
+			}
 			model.selected = 0
 			model.line = 0
 			return model, nil
@@ -1039,6 +1054,11 @@ func (model interactiveModel) statusLine() string {
 }
 
 func (model interactiveModel) rootName() string {
+	if model.options.recursive {
+		if name, err := filepath.Rel(model.repositoryBoundary, model.root); err == nil && name != "." {
+			return name
+		}
+	}
 	if model.snapshot.Repository.Name != "" {
 		return model.snapshot.Repository.Name
 	}
@@ -1050,10 +1070,18 @@ func (model interactiveModel) navigatorView() string {
 	files, history := "Files", "History"
 	if tab == "files" {
 		files = interactiveActive.Render(files)
-	} else {
+	} else if tab == "history" {
 		history = interactiveActive.Render(history)
 	}
-	rows := []string{files + "  " + history + "  " + interactiveMuted.Render(model.configured.Interactive.Navigator)}
+	tabs := files + "  " + history
+	if model.options.recursive {
+		repositories := "Repos"
+		if tab == "repositories" {
+			repositories = interactiveActive.Render(repositories)
+		}
+		tabs += "  " + repositories
+	}
+	rows := []string{tabs + "  " + interactiveMuted.Render(model.configured.Interactive.Navigator)}
 	items := model.navigatorItems()
 	start, end := model.navigatorWindow()
 	for index := start; index < end; index++ {
@@ -1079,6 +1107,20 @@ func (model interactiveModel) navigatorView() string {
 }
 
 func (model interactiveModel) navigatorItems() []navItem {
+	if model.activeTab() == "repositories" {
+		items := make([]navItem, 0, len(model.repositories))
+		for _, root := range model.repositories {
+			label, err := filepath.Rel(model.repositoryBoundary, root)
+			if err != nil {
+				label = root
+			}
+			if root == model.root {
+				label += " (active)"
+			}
+			items = append(items, navItem{repository: root, label: label})
+		}
+		return items
+	}
 	if model.activeTab() == "history" {
 		items := make([]navItem, 0, len(model.snapshot.History))
 		for _, commit := range model.snapshot.History {
@@ -1114,6 +1156,9 @@ func (model interactiveModel) navigatorItems() []navItem {
 }
 
 func (model interactiveModel) activeTab() string {
+	if model.tab == "repositories" && model.options.recursive {
+		return "repositories"
+	}
 	if model.tab == "history" {
 		return "history"
 	}
@@ -1121,7 +1166,7 @@ func (model interactiveModel) activeTab() string {
 }
 
 func (model *interactiveModel) setTab(tab string) {
-	if (tab != "files" && tab != "history") || model.activeTab() == tab {
+	if (tab != "files" && tab != "history" && !(tab == "repositories" && model.options.recursive)) || model.activeTab() == tab {
 		return
 	}
 	model.tab = tab
@@ -1134,6 +1179,9 @@ func (model *interactiveModel) moveFocusedTab(delta int) {
 		return
 	}
 	tabs := []string{"files", "history"}
+	if model.options.recursive {
+		tabs = append(tabs, "repositories")
+	}
 	current := slices.Index(tabs, model.activeTab())
 	model.setTab(tabs[panes.Cycle(current, delta, len(tabs))])
 }
@@ -1234,6 +1282,9 @@ func (model interactiveModel) activateSelection() (tea.Model, tea.Cmd) {
 		return model, nil
 	}
 	item := items[model.selected]
+	if item.repository != "" {
+		return model.selectRepository(item.repository)
+	}
 	if item.oid != "" {
 		model.previewActive = false
 		model.options.view, model.options.commit, model.loading = "commit", item.oid, true
@@ -1508,9 +1559,13 @@ func (model interactiveModel) persistState() error {
 	if len(items) > 0 && model.selected < len(items) {
 		selectedPath, selectedOID = items[model.selected].path, items[model.selected].oid
 	}
+	tab := model.activeTab()
+	if tab == "repositories" {
+		tab = "files"
+	}
 	return model.store.SaveState(workspaceview.State{
 		Repository: model.root, Dock: model.configured.Interactive.Dock,
-		Navigator: model.configured.Interactive.Navigator, Tab: model.activeTab(),
+		Navigator: model.configured.Interactive.Navigator, Tab: tab,
 		Layout: model.options.layout, View: model.options.view,
 		SelectedPath: selectedPath, SelectedLine: model.selectedLine(), SelectedOID: selectedOID,
 		Commands: append([]string(nil), model.commands...),

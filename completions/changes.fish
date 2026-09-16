@@ -285,6 +285,11 @@ function __changes_completion_context
         continue
       case 'interactive:--width=*'
         continue
+      case 'interactive:--root'
+        set consume_value 1
+        continue
+      case 'interactive:--root=*'
+        continue
       case 'workspace:--commit'
         set consume_value 1
         continue
@@ -600,6 +605,9 @@ complete -c changes -n 'test (__changes_completion_context) = "interactive"' -l 
 complete -c changes -n 'test (__changes_completion_context) = "interactive"' -l refresh -d 'Bypass cached workspace and provider results'
 complete -c changes -n 'test (__changes_completion_context) = "interactive"' -f -l view -r -a '(__changes_completion_values_7)' -d 'Git comparison view'
 complete -c changes -n 'test (__changes_completion_context) = "interactive"' -l width -r -d 'Render width'
+complete -c changes -n 'test (__changes_completion_context) = "interactive"' -l recursive -s r -d 'Browse all workspace repositories'
+complete -c changes -n 'test (__changes_completion_context) = "interactive"' -l root -r -d 'Directory used to resolve repositories'
+complete -c changes -n 'test (__changes_completion_context) = "interactive"' -l staged -d 'Show staged changes'
 complete -c changes -n 'test (__changes_completion_context) = "workspace"' -f -l commit -r -a '(__changes_completion_values_8)' -d 'Commit to compare with its first parent'
 complete -c changes -n 'test (__changes_completion_context) = "workspace"' -l config -r -d 'YAML configuration file'
 complete -c changes -n 'test (__changes_completion_context) = "workspace"' -l history-limit -r -d 'Commit history limit'

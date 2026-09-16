@@ -187,6 +187,8 @@ _changes_complete() {
       'interactive:--view='*) continue ;;
       'interactive:--width') consume_value=1; continue ;;
       'interactive:--width='*) continue ;;
+      'interactive:--root') consume_value=1; continue ;;
+      'interactive:--root='*) continue ;;
       'workspace:--commit') consume_value=1; continue ;;
       'workspace:--commit='*) continue ;;
       'workspace:--config') consume_value=1; continue ;;
@@ -382,7 +384,7 @@ _changes_complete() {
       ;;
     'interactive')
       __changes_completion_filter "$current" < <(
-        printf '%s\n' '--commit' '--config' '--history-limit' '--layout' '--no-calls' '--no-groups' '--no-notes' '--no-symbols' '--quiet' '--refresh' '--view' '--width'
+        printf '%s\n' '--commit' '--config' '--history-limit' '--layout' '--no-calls' '--no-groups' '--no-notes' '--no-symbols' '--quiet' '--refresh' '--view' '--width' '--recursive' '-r' '--root' '--staged'
       )
       ;;
     'workspace')

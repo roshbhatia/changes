@@ -203,6 +203,12 @@ Outside Git difftool mode, Changes displays progress only when standard error
 is a terminal. `--quiet` disables it. Standard output stays safe for pipes and
 JSON consumers.
 
+Use `changes interactive --recursive --root ~/src` to browse workspace repositories.
+The Repos tab lists repositories by relative path; press Enter to open one.
+Use Tab in the explorer or `:tab repositories` to return to the repository list.
+History, notes, and file previews use the selected repository.
+`-r` is the short form of `--recursive`; `--staged` selects staged changes.
+
 `changes.notes.create` accepts either one `note` or one atomic `notes` batch.
 In History, press Space to mark separate commits, then press `g` to generate
 drafts for each commit's first-parent comparison. Review every draft before the
@@ -311,6 +317,9 @@ Review changes in an interactive workspace
 | `--refresh` | Bypass cached workspace and provider results |
 | `--view` `<value>` | Git comparison view |
 | `--width` `<value>` | Render width |
+| `--recursive`, `-r` | Browse all workspace repositories |
+| `--root` `<value>` | Directory used to resolve repositories |
+| `--staged` | Show staged changes |
 
 ### `changes workspace`
 
