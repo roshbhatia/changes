@@ -42,10 +42,10 @@ Sleep 1s
 Ctrl+H
 Shift+Tab
 Sleep 2s
-Type "d"
+Type "P"
 Sleep 2s
 Type "?"
-Wait+Screen /click \/ wheel/
+Wait+Screen /shift\+click/
 Sleep 3s
 Escape
 Sleep 3s

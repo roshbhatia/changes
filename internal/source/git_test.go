@@ -3,6 +3,7 @@ package source
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -48,7 +49,7 @@ func TestHistoryAndCommitComparisonUseFirstParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.From != history[0].Parent || second.To != history[0].OID || commit != history[0] {
+	if second.From != history[0].Parent || second.To != history[0].OID || !reflect.DeepEqual(commit, history[0]) {
 		t.Fatalf("comparison = %#v, commit = %#v, history = %#v", second, commit, history[0])
 	}
 	root, rootCommit, err := CommitComparison(directory, history[1].OID)

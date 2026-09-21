@@ -14,25 +14,26 @@ import (
 )
 
 type Commit struct {
-	OID        string
-	Parent     string
-	Summary    string
-	Author     string
-	AuthoredAt string
+	Contributors []Contributor
+	OID          string
+	Parent       string
+	Summary      string
+	Author       string
+	AuthoredAt   string
 }
 
 func History(directory string, limit int) ([]Commit, error) {
 	if limit <= 0 {
 		return []Commit{}, nil
 	}
-	format := "%H%x00%P%x00%an%x00%aI%x00%s%x00"
+	format := "%H%x00%P%x00%an%x00%aI%x00%s%x00%ae%x00%(trailers:only,unfold)%x00"
 	output, err := git.Output(directory, "log", "-z", "--no-decorate", "--max-count="+strconv.Itoa(limit), "--format="+format)
 	if err != nil {
 		return nil, fmt.Errorf("read commit history: %w", err)
 	}
 	fields := strings.Split(output, "\x00")
 	commits := make([]Commit, 0, limit)
-	for index := 0; index+4 < len(fields); {
+	for index := 0; index+6 < len(fields); {
 		if fields[index] == "" {
 			index++
 			continue
@@ -45,8 +46,9 @@ func History(directory string, limit int) ([]Commit, error) {
 		commits = append(commits, Commit{
 			OID: fields[index], Parent: parent, Author: fields[index+2],
 			AuthoredAt: fields[index+3], Summary: fields[index+4],
+			Contributors: Contributors(fields[index+2], fields[index+5], fields[index+6]),
 		})
-		index += 5
+		index += 7
 	}
 	return commits, nil
 }
@@ -57,12 +59,12 @@ func CommitComparison(directory, revision string) (Spec, Commit, error) {
 		return Spec{}, Commit{}, fmt.Errorf("resolve commit %q: %w", revision, err)
 	}
 	oid = strings.TrimSpace(oid)
-	metadata, err := git.Output(directory, "show", "-s", "--format=%P%x00%an%x00%aI%x00%s", oid)
+	metadata, err := git.Output(directory, "show", "-s", "--format=%P%x00%an%x00%aI%x00%s%x00%ae%x00%(trailers:only,unfold)", oid)
 	if err != nil {
 		return Spec{}, Commit{}, fmt.Errorf("read commit %s: %w", oid, err)
 	}
-	fields := strings.SplitN(metadata, "\x00", 4)
-	if len(fields) != 4 {
+	fields := strings.SplitN(metadata, "\x00", 6)
+	if len(fields) != 6 {
 		return Spec{}, Commit{}, errors.New("git returned malformed commit metadata")
 	}
 	parents := strings.Fields(fields[0])
@@ -75,7 +77,7 @@ func CommitComparison(directory, revision string) (Spec, Commit, error) {
 			return Spec{}, Commit{}, err
 		}
 	}
-	commit := Commit{OID: oid, Parent: parent, Author: fields[1], AuthoredAt: fields[2], Summary: strings.TrimSpace(fields[3])}
+	commit := Commit{Contributors: Contributors(fields[1], fields[4], fields[5]), OID: oid, Parent: parent, Author: fields[1], AuthoredAt: fields[2], Summary: strings.TrimSpace(fields[3])}
 	return Spec{Dir: directory, From: parent, To: oid}, commit, nil
 }
 

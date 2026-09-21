@@ -14,7 +14,7 @@ Use `Ctrl-h/j/k/l` to move to the pane in that screen direction. `Tab` and
 Click a pane, Files or History, or a visible row to focus or select it. The
 mouse wheel scrolls the pane under the pointer.
 
-Use `t` for tree or list, `d` for a left or bottom navigator, `s` for unified
+Use `t` for tree or list, `P` for a left or bottom navigator, `s` for unified
 or side-by-side diff, and `v` for working, staged, or first-parent commit
 comparisons. Press `:` for commands such as `layout side-by-side`, `dock
 bottom`, `view staged`, and `refresh`.

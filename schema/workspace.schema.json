@@ -48,6 +48,32 @@
         "layout"
       ]
     },
+    "Contributor": {
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "ai": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "role",
+        "name",
+        "evidence"
+      ]
+    },
     "Failure": {
       "properties": {
         "source": {
@@ -68,6 +94,10 @@
     },
     "File": {
       "properties": {
+        "renderedLine": {
+          "type": "integer",
+          "minimum": 0
+        },
         "path": {
           "type": "string"
         },
@@ -169,6 +199,12 @@
     },
     "HistoryEntry": {
       "properties": {
+        "contributors": {
+          "items": {
+            "$ref": "#/$defs/Contributor"
+          },
+          "type": "array"
+        },
         "oid": {
           "type": "string"
         },

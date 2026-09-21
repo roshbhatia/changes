@@ -2,6 +2,7 @@ package workspaceview
 
 import (
 	"github.com/roshbhatia/changes/internal/provider"
+	"github.com/roshbhatia/changes/internal/source"
 	sharedconfig "github.com/roshbhatia/go-utils/config"
 )
 
@@ -51,13 +52,14 @@ type Freshness struct {
 }
 
 type HistoryEntry struct {
-	OID         string   `json:"oid" jsonschema:"required"`
-	Parent      string   `json:"parent,omitempty"`
-	Summary     string   `json:"summary" jsonschema:"required"`
-	Author      string   `json:"author" jsonschema:"required"`
-	AuthoredAt  string   `json:"authoredAt" jsonschema:"required,format=date-time"`
-	NoteCount   int      `json:"noteCount,omitempty" jsonschema:"minimum=0"`
-	NoteAuthors []string `json:"noteAuthors,omitempty"`
+	Contributors []source.Contributor `json:"contributors,omitempty"`
+	OID          string               `json:"oid" jsonschema:"required"`
+	Parent       string               `json:"parent,omitempty"`
+	Summary      string               `json:"summary" jsonschema:"required"`
+	Author       string               `json:"author" jsonschema:"required"`
+	AuthoredAt   string               `json:"authoredAt" jsonschema:"required,format=date-time"`
+	NoteCount    int                  `json:"noteCount,omitempty" jsonschema:"minimum=0"`
+	NoteAuthors  []string             `json:"noteAuthors,omitempty"`
 }
 
 type Group struct {
@@ -70,12 +72,13 @@ type Group struct {
 }
 
 type File struct {
-	Path        string   `json:"path" jsonschema:"required"`
-	Added       int      `json:"added" jsonschema:"required,minimum=0"`
-	Deleted     int      `json:"deleted" jsonschema:"required,minimum=0"`
-	NoteCount   int      `json:"noteCount,omitempty" jsonschema:"minimum=0"`
-	NoteAuthors []string `json:"noteAuthors,omitempty"`
-	Hunks       []Hunk   `json:"hunks" jsonschema:"required"`
+	RenderedLine *int     `json:"renderedLine,omitempty" jsonschema:"minimum=0"`
+	Path         string   `json:"path" jsonschema:"required"`
+	Added        int      `json:"added" jsonschema:"required,minimum=0"`
+	Deleted      int      `json:"deleted" jsonschema:"required,minimum=0"`
+	NoteCount    int      `json:"noteCount,omitempty" jsonschema:"minimum=0"`
+	NoteAuthors  []string `json:"noteAuthors,omitempty"`
+	Hunks        []Hunk   `json:"hunks" jsonschema:"required"`
 }
 
 type Hunk struct {

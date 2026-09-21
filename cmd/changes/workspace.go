@@ -281,8 +281,10 @@ func buildWorkspaceScopedSnapshot(root string, options workspaceOptions, configu
 	if renderColor == "" {
 		renderColor = "never"
 	}
+	fileRows := map[string]int{}
 	view := renderer{
-		specs: []source.Spec{spec}, under: root, width: width,
+		fileRows: fileRows,
+		specs:    []source.Spec{spec}, under: root, width: width,
 		syms: !options.noSymbols, calls: !options.noCalls, groups: !options.noGroups,
 		groupProvider: configured.Providers.Group, notes: !options.noNotes,
 		noteInterval: configured.Notes.RefreshInterval.Duration(), budget: time.Duration(configured.Providers.Timeout),
@@ -349,6 +351,11 @@ func buildWorkspaceScopedSnapshot(root string, options workspaceOptions, configu
 		Files: workspaceFiles(analysis.options, noteValues.values), Notes: append([]provider.Note(nil), noteValues.values...),
 		Threads: workspaceThreads(noteValues.values), Failures: []workspaceview.Failure{}, Rendered: rendered,
 	}
+	for index := range snapshot.Files {
+		if row, ok := fileRows[snapshot.Files[index].Path]; ok {
+			snapshot.Files[index].RenderedLine = &row
+		}
+	}
 	if noteValues.stale {
 		snapshot.Freshness.State = "stale"
 		snapshot.Failures = append(snapshot.Failures, workspaceview.Failure{Message: "one or more note providers failed; retained notes may be stale", Stale: true})
@@ -359,7 +366,7 @@ func buildWorkspaceScopedSnapshot(root string, options workspaceOptions, configu
 func workspaceHistory(commits []source.Commit) []workspaceview.HistoryEntry {
 	entries := make([]workspaceview.HistoryEntry, 0, len(commits))
 	for _, commit := range commits {
-		entries = append(entries, workspaceview.HistoryEntry{OID: commit.OID, Parent: commit.Parent, Summary: commit.Summary, Author: commit.Author, AuthoredAt: commit.AuthoredAt, NoteAuthors: []string{}})
+		entries = append(entries, workspaceview.HistoryEntry{Contributors: commit.Contributors, OID: commit.OID, Parent: commit.Parent, Summary: commit.Summary, Author: commit.Author, AuthoredAt: commit.AuthoredAt, NoteAuthors: []string{}})
 	}
 	return entries
 }

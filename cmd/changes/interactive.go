@@ -290,7 +290,7 @@ func (model interactiveModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		previousWidth := model.diffWidth()
 		model.width, model.height = value.Width, value.Height
 		model.resize()
-		if width := model.diffWidth(); width > 0 && width != previousWidth {
+		if width := model.diffWidth(); model.mode != "attribution" && width > 0 && width != previousWidth {
 			model.options.width = width
 			model.loading = true
 			return model, tea.Batch(model.spinner.Tick, model.refreshCommand())
@@ -408,6 +408,14 @@ func (model interactiveModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		model.mode, model.loading = "results", false
 		return model, nil
+	case attributionLoaded:
+		if model.mode != "attribution" || value.epoch != model.currentRefreshEpoch() {
+			return model, nil
+		}
+		model.loading = false
+		model.viewport.SetContent(value.content)
+		model.viewport.GotoTop()
+		return model, nil
 	case tea.KeyMsg:
 		return model.handleKey(value)
 	case tea.MouseMsg:
@@ -427,6 +435,22 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if model.showHelp {
 		if key.String() == "?" || key.String() == "esc" {
 			model.showHelp = false
+		}
+		return model, nil
+	}
+	if model.mode == "attribution" {
+		if key.String() == "esc" || key.String() == "q" || key.String() == "i" {
+			model.mode, model.loading = "normal", false
+			model.jumpToSelection()
+			return model, nil
+		}
+		switch key.String() {
+		case "d", "ctrl+d":
+			model.viewport.HalfViewDown()
+		case "u", "ctrl+u":
+			model.viewport.HalfViewUp()
+		default:
+			model.viewport, _ = model.viewport.Update(key)
 		}
 		return model, nil
 	}
@@ -560,6 +584,26 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return model, command
 	}
 	switch binding.ID {
+	case "attribution":
+		file := model.selectedFile()
+		if file == "" {
+			model.message = "select a file to inspect authorship"
+			return model, nil
+		}
+		model.mode, model.loading = "attribution", true
+		model.previewActive = false
+		if model.refreshEpoch != nil {
+			model.refreshEpoch.Add(1)
+		}
+		model.viewport.SetContent("Reading recorded line authorship...")
+		return model, model.attributionCommand(file)
+	case "page":
+		if key.String() == "u" || key.String() == "ctrl+u" {
+			model.viewport.HalfViewUp()
+		} else {
+			model.viewport.HalfViewDown()
+		}
+		return model, nil
 	case "reader":
 		return model, model.readerCommand()
 	case "collapse", "expand":
@@ -672,6 +716,10 @@ func (model interactiveModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model interactiveModel) handleMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if model.mode == "attribution" {
+		model.viewport, _ = model.viewport.Update(mouse)
+		return model, nil
+	}
 	if model.showHelp {
 		if mouse.Button == tea.MouseButtonWheelUp || mouse.Button == tea.MouseButtonWheelDown {
 			delta := 1
@@ -730,6 +778,12 @@ func (model interactiveModel) handleMouse(mouse tea.MouseMsg) (tea.Model, tea.Cm
 					model.line = 0
 					if model.activeTab() == "history" && relativeX >= 2 && relativeX <= 4 {
 						model.toggleMarkedCommit(index)
+					}
+					if model.activeTab() == "files" {
+						if mouse.Shift {
+							return model.activateSelection()
+						}
+						model.jumpToSelection()
 					}
 				}
 			}
@@ -1136,7 +1190,7 @@ func (model interactiveModel) navigatorItems() []navItem {
 			if commit.NoteCount > 0 {
 				notes = " ◆"
 			}
-			items = append(items, navItem{oid: commit.OID, label: selection + notes + " " + oid + " " + commit.Summary})
+			items = append(items, navItem{oid: commit.OID, label: selection + notes + " " + oid + contributorBadge(commit.Contributors) + " " + commit.Summary + " · " + cleanNoteOneLine(commit.Author)})
 		}
 		return items
 	}
@@ -1149,7 +1203,7 @@ func (model interactiveModel) navigatorItems() []navItem {
 		if file.NoteCount > 0 {
 			marker = "◆"
 		}
-		label := marker + " " + file.Path + fmt.Sprintf(" +%d -%d", file.Added, file.Deleted)
+		label := marker + " " + file.Path + interactiveFileStats(file)
 		items = append(items, navItem{path: file.Path, label: label})
 	}
 	return items
@@ -1355,6 +1409,8 @@ func (model interactiveModel) changedLines() []int {
 
 func (model interactiveModel) footerView() string {
 	switch model.mode {
+	case "attribution":
+		return interactiveMuted.Render("Recorded authorship   d/u scroll   esc return to diff")
 	case "generating":
 		return interactiveMuted.Render("Generating drafts. ctrl+c cancels Changes")
 	case "review":

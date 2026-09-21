@@ -161,7 +161,7 @@ func TestInteractiveModelTogglesDockLayoutAndHistory(t *testing.T) {
 		History: []workspaceview.HistoryEntry{{OID: strings.Repeat("a", 40), Summary: "first", Author: "test", AuthoredAt: "2026-09-07T00:00:00Z"}},
 		Groups:  []workspaceview.Group{}, Notes: nil, Threads: []workspaceview.NoteThread{}, Failures: []workspaceview.Failure{}, Rendered: "rendered",
 	})
-	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
 	model = updated.(interactiveModel)
 	if model.configured.Interactive.Dock != "bottom" {
 		t.Fatalf("dock = %q", model.configured.Interactive.Dock)

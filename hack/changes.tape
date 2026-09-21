@@ -27,7 +27,7 @@ Ctrl+H
 Type "jj"
 Enter
 Wait+Screen /archives/
-Type "d"
+Type "P"
 Sleep 10s
 Ctrl+K
 Ctrl+D

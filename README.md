@@ -171,8 +171,9 @@ all provider analysis for the rendered comparison.
 `changes interactive` opens the cohesive diff tree in an alternate screen. Its
 Files and History tabs share a navigator. Use `Ctrl-h/j/k/l` to move between
 panes. `Tab` and `Shift-Tab` stay inside the focused pane and switch its tabs.
-Click a pane, tab, or visible row to focus or select it. The mouse wheel scrolls
-the pane under the pointer. Press `t` for tree or list, `d` for a left or bottom
+Click a file to scroll to it in the full diff. Shift-click or press `Enter`
+to isolate that file. Click a pane or tab to focus it. The mouse wheel scrolls
+the pane under the pointer. Press `t` for tree or list, `P` for a left or bottom
 dock, `s` for unified or side-by-side diff, and `v` to switch working, staged,
 and first-parent commit views. Press `:` for the command palette. Press `a` to
 use `interactive.noteInput`, or use `n` for the popup and `e` for `$EDITOR`.
@@ -180,9 +181,14 @@ Changes saves layout and exact selection under `XDG_STATE_HOME`. It keeps
 replaceable snapshots under `XDG_CACHE_HOME`.
 
 In tree mode, `Enter` previews a file or directory. `h` collapses a directory
-and `l` expands it. The root row previews the complete comparison. `Ctrl-u/d`
+and `l` expands it. The root row previews the complete comparison. `u/d` (or `Ctrl-u/d`)
 scrolls the changes pane while the navigator keeps focus. Refresh retains the
 selected path and reports stale data when Git or a provider fails.
+
+Press `i` on a file to inspect Git authorship for added and deleted lines.
+History lists commit authors and marks declared AI assistance. Git trailers
+identify co-authors and assistants; they do not prove who wrote each line.
+Uncommitted lines remain unknown, and shallow history shows boundary markers.
 
 Set `interactive.reader: [diffnav]` to use an installed diffnav as an external
 reader. Press `o` or run `:reader` to open the selected scope. When the changes

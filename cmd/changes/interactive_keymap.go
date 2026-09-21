@@ -12,8 +12,8 @@ var interactiveKeyCatalog = sharedkeymap.Must(
 		Display: "j / k", Short: "move", Description: "select an explorer row or scroll the changes pane",
 	},
 	sharedkeymap.Binding{
-		ID: "page", Keys: []string{"ctrl+d", "ctrl+u"},
-		Display: "ctrl+d / ctrl+u", Short: "page", Description: "scroll the changes pane by half a page",
+		ID: "page", Keys: []string{"d", "u", "ctrl+d", "ctrl+u"},
+		Display: "d / u", Short: "page", Description: "scroll the changes pane by half a page",
 	},
 	sharedkeymap.Binding{ID: "activate", Keys: []string{"enter"}, Short: "open", Description: "open the selected file, commit, or repository"},
 	sharedkeymap.Binding{ID: "reader", Keys: []string{"o"}, Short: "reader", Description: "open the selected scope in the external patch reader"},
@@ -26,7 +26,7 @@ var interactiveKeyCatalog = sharedkeymap.Must(
 	sharedkeymap.Binding{ID: "mark", Keys: []string{"space"}, Short: "mark", Description: "include or exclude the selected History commit"},
 	sharedkeymap.Binding{ID: "generate", Keys: []string{"g"}, Short: "generate", Description: "generate reviewable notes for marked commits or the cursor"},
 	sharedkeymap.Binding{ID: "navigator", Keys: []string{"t"}, Short: "tree/list", Description: "switch the file navigator between tree and list"},
-	sharedkeymap.Binding{ID: "dock", Keys: []string{"d"}, Short: "dock", Description: "move the explorer between the left and bottom"},
+	sharedkeymap.Binding{ID: "dock", Keys: []string{"P"}, Short: "dock", Description: "move the explorer between the left and bottom"},
 	sharedkeymap.Binding{ID: "layout", Keys: []string{"s"}, Short: "layout", Description: "switch the diff between unified and side-by-side"},
 	sharedkeymap.Binding{ID: "view", Keys: []string{"v"}, Short: "view", Description: "cycle working, staged, and first-parent commit changes"},
 	sharedkeymap.Binding{
@@ -37,11 +37,12 @@ var interactiveKeyCatalog = sharedkeymap.Must(
 		ID: "note", Keys: []string{"a", "n", "e"},
 		Display: "a / n / e", Short: "note", Description: "add a note with the configured, popup, or editor input",
 	},
+	sharedkeymap.Binding{ID: "attribution", Keys: []string{"i"}, Short: "authorship", Description: "inspect recorded authors and assistance for changed lines"},
 	sharedkeymap.Binding{ID: "refresh", Keys: []string{"r"}, Short: "refresh", Description: "refresh the repository and provider snapshot"},
 	sharedkeymap.Binding{ID: "command", Keys: []string{":"}, Short: "command", Description: "open the command line"},
 	sharedkeymap.Binding{
 		ID: "mouse", Keys: []string{"click", "wheel"},
-		Display: "click / wheel", Short: "mouse", Description: "focus panes, activate tabs, select rows, and scroll",
+		Display: "click / shift+click / wheel", Short: "mouse", Description: "jump to a file, isolate a file, or scroll",
 	},
 	sharedkeymap.Binding{ID: "help", Keys: []string{"?"}, Short: "help", Description: "open this key list"},
 	sharedkeymap.Binding{ID: "quit", Keys: []string{"q"}, Short: "quit", Description: "leave Changes"},

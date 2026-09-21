@@ -344,6 +344,7 @@ func restorePathSeparator(raw, parsed []string) []string {
 }
 
 type renderer struct {
+	fileRows      map[string]int
 	specs         []source.Spec
 	under         string
 	named         bool
@@ -407,7 +408,7 @@ func (r renderer) renderPatchesWithAnalysis(patches []string, notes noteLayer, r
 	notes = remapNotePaths(notes, analysis.aliases)
 	options := analysis.options
 	if r.stat || r.engine == "builtin" {
-		body, err := renderTreeWithGroups(options, analysis.groups, notes, r.columns())
+		body, err := renderTreeWithGroups(options, analysis.groups, notes, r.columns(), r.fileRows)
 		return body, notes, analysis, err
 	}
 	body, err := r.display(patches)
@@ -702,16 +703,17 @@ type changeGroupPart struct {
 	notes   []provider.Note
 }
 
-func renderTreeWithGroups(opts diffview.Options, groups []provider.ChangeGroup, notes noteLayer, width int) (string, error) {
+func renderTreeWithGroups(opts diffview.Options, groups []provider.ChangeGroup, notes noteLayer, width int, locations ...map[string]int) (string, error) {
 	parts := partitionChangeGroups(opts, groups, notes.values)
 	if len(parts) == 0 {
-		return renderTreeWithNotes(opts, notes, width)
+		return renderTreeWithNotes(opts, notes, width, locations...)
 	}
 	combined := opts
 	combined.Files = nil
 	combined.Symbols = map[string][]diffview.Symbol{}
 	combined.Edges = map[string][]diffview.Edge{}
 	combined.Pins = map[string]bool{}
+	originalPaths := map[string]string{}
 	insertions := []noteInsertion{}
 	for _, part := range parts {
 		marked, partInsertions, err := markNoteRows(part.options, part.notes)
@@ -731,15 +733,30 @@ func renderTreeWithGroups(opts diffview.Options, groups []provider.ChangeGroup, 
 		for _, file := range marked.Files {
 			oldPath := file.Path
 			file.Path = prefix + oldPath
+			originalPaths[cleanMarkedPath(file.Path, partInsertions)] = cleanMarkedPath(oldPath, partInsertions)
 			combined.Files = append(combined.Files, file)
 			combined.Symbols[file.Path] = marked.Symbols[oldPath]
 			combined.Edges[file.Path] = marked.Edges[oldPath]
 		}
 		insertions = append(insertions, partInsertions...)
 	}
-	body, err := renderMarkedTree(combined, insertions, notes, width)
+	body, err := renderMarkedTree(combined, insertions, notes, width, locations...)
 	if err != nil {
 		return "", err
+	}
+	if len(locations) > 0 && locations[0] != nil {
+		rows := locations[0]
+		originals := map[string]int{}
+		for displayed, row := range rows {
+			original := originalPaths[displayed]
+			if previous, ok := originals[original]; !ok || row < previous {
+				originals[original] = row
+			}
+		}
+		clear(rows)
+		for original, row := range originals {
+			rows[original] = row
+		}
 	}
 	return fitTreeWidth(replaceTreeSummary(body, opts), width), nil
 }
@@ -934,18 +951,28 @@ func rangesOverlap(leftStart, leftEnd, rightStart, rightEnd int) bool {
 	return leftStart <= rightEnd && rightStart <= leftEnd
 }
 
-func renderTreeWithNotes(opts diffview.Options, notes noteLayer, width int) (string, error) {
+func renderTreeWithNotes(opts diffview.Options, notes noteLayer, width int, locations ...map[string]int) (string, error) {
 	marked, insertions, err := markNoteRows(opts, notes.values)
 	if err != nil {
 		return "", err
 	}
-	return renderMarkedTree(marked, insertions, notes, width)
+	return renderMarkedTree(marked, insertions, notes, width, locations...)
 }
 
-func renderMarkedTree(marked diffview.Options, insertions []noteInsertion, notes noteLayer, width int) (string, error) {
+func renderMarkedTree(marked diffview.Options, insertions []noteInsertion, notes noteLayer, width int, locations ...map[string]int) (string, error) {
+	anchors := map[string]string{}
+	if len(locations) > 0 && locations[0] != nil {
+		marked, anchors = markFileLocations(marked, insertions)
+	}
 	body := diffview.Render(marked)
+	finish := func(body string) string {
+		if len(anchors) > 0 {
+			body = collectFileLocations(body, anchors, locations[0])
+		}
+		return fitTreeWidth(body, width)
+	}
 	if len(insertions) == 0 {
-		return fitTreeWidth(body, width), nil
+		return finish(body), nil
 	}
 	lines := strings.Split(body, "\n")
 	byRow := map[int][]noteInsertion{}
@@ -980,7 +1007,7 @@ func renderMarkedTree(marked diffview.Options, insertions []noteInsertion, notes
 			output = append(output, embeddedNoteLines(insertion.prefix, insertion.notes, notes.stale, width)...)
 		}
 	}
-	return fitTreeWidth(strings.Join(output, "\n"), width), nil
+	return finish(strings.Join(output, "\n")), nil
 }
 
 func replaceTreeSummary(body string, original diffview.Options) string {

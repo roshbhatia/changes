@@ -124,7 +124,7 @@ func (model interactiveModel) directoryItems() []navItem {
 	}
 	entries := map[string]navItem{}
 	for _, file := range model.snapshot.Files {
-		label := path.Base(file.Path) + fmt.Sprintf(" +%d -%d", file.Added, file.Deleted)
+		label := path.Base(file.Path) + interactiveFileStats(file)
 		if file.NoteCount > 0 {
 			label += fmt.Sprintf(" (%d notes)", file.NoteCount)
 		}
@@ -181,4 +181,31 @@ func (model *interactiveModel) setNavigator(kind string) {
 			break
 		}
 	}
+}
+
+func interactiveFileStats(file workspaceview.File) string {
+	return " " + contextAdd.Render(fmt.Sprintf("+%d", file.Added)) + " " + contextDel.Render(fmt.Sprintf("-%d", file.Deleted))
+}
+
+func (model *interactiveModel) jumpToSelection() {
+	items := model.navigatorItems()
+	if model.selected < 0 || model.selected >= len(items) {
+		return
+	}
+	item := items[model.selected]
+	model.previewActive, model.previewPath, model.previewDirectory = false, "", false
+	if model.previewEpoch != nil {
+		model.previewEpoch.Add(1)
+	}
+	model.viewport.SetContent(model.snapshot.Rendered)
+	row := 0
+	found := false
+	for _, file := range model.snapshot.Files {
+		if file.Path == item.path || item.directory && strings.HasPrefix(file.Path, item.path) {
+			if file.RenderedLine != nil && (!found || *file.RenderedLine < row) {
+				row, found = *file.RenderedLine, true
+			}
+		}
+	}
+	model.viewport.SetYOffset(row)
 }
